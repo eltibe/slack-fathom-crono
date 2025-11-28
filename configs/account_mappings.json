@@ -1,0 +1,13 @@
+{
+  "domain_to_account": {
+    "neuronup.com": "NeuronUP",
+    "insightrevenue.com": "Insight Revenue",
+    "tinext.com": "Tinext"
+  },
+  "comments": {
+    "neuronup.com": "NeuronUP - Company name for POST search (GET by ID returns 404)",
+    "insightrevenue.com": "Insight Revenue - Company name for POST search (GET by ID returns 404)",
+    "tinext.com": "Tinext - Prevents incorrect match to 'Tinexta Innovation Hub'"
+  },
+  "note": "Values are company names used for POST /api/v1/Accounts/search (GET by ID endpoint doesn't work reliably)"
+}

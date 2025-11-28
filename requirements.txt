@@ -1,0 +1,21 @@
+anthropic>=0.18.0
+google-generativeai>=0.3.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+google-api-python-client>=2.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+python-dateutil>=2.8.0
+pytz>=2023.3
+rumps>=0.4.0
+slack-sdk>=3.23.0
+flask>=3.0.0
+
+# Database dependencies (SQLAlchemy 2.0 + PostgreSQL)
+sqlalchemy==2.0.23
+alembic==1.13.0
+psycopg2-binary==2.9.9
+
+# Redis for tenant caching (optional but recommended)
+redis==5.0.1
+hiredis==2.3.2

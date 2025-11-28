@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+from modules.crono_client import CronoClient
+from dotenv import load_dotenv
+
+load_dotenv()
+
+try:
+    print("🔍 Testing Crono account search for neuronup.com...")
+    crono = CronoClient()
+
+    # Test 1: Search all accounts
+    print("\n📋 Fetching all accounts (limit 100)...")
+    all_accounts = crono.search_accounts(limit=100)
+    print(f"   Found {len(all_accounts)} accounts total")
+
+    # Check if neuronup.com is in the list
+    for acc in all_accounts:
+        website = acc.get('website', '') or acc.get('Website', '')
+        name = acc.get('name', 'Unknown')
+        if 'neuronup' in str(website).lower() or 'neuronup' in str(name).lower():
+            print(f"\n✅ Found NeuronUP account!")
+            print(f"   Name: {name}")
+            print(f"   Website: {website}")
+            print(f"   ObjectId: {acc.get('objectId')}")
+            break
+    else:
+        print("\n⚠️  No account with 'neuronup' found in first 100 accounts")
+        print("   Showing first 5 accounts as example:")
+        for i, acc in enumerate(all_accounts[:5]):
+            print(f"   {i+1}. {acc.get('name')} - {acc.get('website', 'No website')}")
+
+    # Test 2: Try find_account_by_domain
+    print("\n🔍 Testing find_account_by_domain('neuronup.com')...")
+    account = crono.find_account_by_domain('neuronup.com')
+
+    if account:
+        print(f"✅ Account found!")
+        print(f"   Name: {account.get('name')}")
+        print(f"   Website: {account.get('website')}")
+        print(f"   ObjectId: {account.get('objectId')}")
+    else:
+        print("❌ Account not found by domain")
+
+except Exception as e:
+    print(f"❌ Error: {e}")
+    import traceback
+    traceback.print_exc()
