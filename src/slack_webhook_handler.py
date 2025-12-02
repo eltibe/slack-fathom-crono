@@ -2706,6 +2706,33 @@ def save_user_settings_api():
 
 
 # ============================================================================
+# HEALTH CHECK
+# ============================================================================
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """
+    Health check endpoint for monitoring.
+    Returns 200 if the server is running.
+    """
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "slack-fathom-crono"
+    }), 200
+
+
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint - redirects to health check."""
+    return jsonify({
+        "message": "Slack Fathom Crono Integration API",
+        "health": "/health",
+        "version": "1.0.0"
+    }), 200
+
+
+# ============================================================================
 # SERVER STARTUP
 # ============================================================================
 

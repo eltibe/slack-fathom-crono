@@ -32,3 +32,26 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Python credentials
+token.json
+credentials.json
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Alembic
+alembic/versions/__pycache__/

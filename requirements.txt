@@ -10,6 +10,7 @@ pytz>=2023.3
 rumps>=0.4.0
 slack-sdk>=3.23.0
 flask>=3.0.0
+gunicorn>=21.2.0
 
 # Database dependencies (SQLAlchemy 2.0 + PostgreSQL)
 sqlalchemy==2.0.23
