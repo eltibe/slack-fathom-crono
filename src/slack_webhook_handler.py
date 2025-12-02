@@ -15,7 +15,7 @@ import sys
 import ssl
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from slack_sdk.signature import SignatureVerifier
@@ -35,6 +35,7 @@ from src.providers.crono_provider import CronoProvider
 from src.database import get_db
 from src.models import User
 from src.models.tenant import Tenant
+from src.models.user_settings import UserSettings
 
 # Load environment variables
 load_dotenv()
@@ -50,7 +51,6 @@ ssl_context.verify_mode = ssl.CERT_NONE
 # Initialize Slack clients
 slack_client = SlackClient()
 slack_web_client = WebClient(token=os.getenv('SLACK_BOT_TOKEN'), ssl=ssl_context)
-slash_command_handler = SlackSlashCommandHandler()
 
 # Signature verifier for security
 signature_verifier = SignatureVerifier(os.getenv('SLACK_SIGNING_SECRET'))
@@ -94,6 +94,35 @@ def get_user_crm_credentials(db, slack_user_id: str, team_id: str) -> Optional[D
         }
     except Exception as e:
         sys.stderr.write(f"Error getting CRM credentials: {e}\n")
+        return None
+
+
+def get_user_fathom_key(db, slack_user_id: str, team_id: str) -> Optional[str]:
+    """Get Fathom API key for a Slack user."""
+    try:
+        # First find the tenant by slack_team_id to get the UUID
+        tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+        if not tenant:
+            sys.stderr.write(f"Tenant not found for team_id: {team_id}\n")
+            return None
+
+        # Then find the user with the tenant UUID
+        user = db.query(User).filter(
+            User.slack_user_id == slack_user_id,
+            User.tenant_id == tenant.id
+        ).first()
+
+        if not user:
+            sys.stderr.write(f"User not found: slack_user_id={slack_user_id}, tenant_id={tenant.id}\n")
+            return None
+
+        if not user.settings:
+            sys.stderr.write(f"User settings not found for user_id={user.id}\n")
+            return None
+
+        return user.settings.fathom_api_key
+    except Exception as e:
+        sys.stderr.write(f"Error getting Fathom API key: {e}\n")
         return None
 
 
@@ -186,7 +215,15 @@ def slack_commands():
                 sys.stderr.write("🔄 Starting background processing...\n")
                 sys.stderr.flush()
 
-                response = slash_command_handler.handle_followup_command(
+                # Get user's Fathom API key from database
+                team_id = request.form.get('team_id')
+                with get_db() as db:
+                    fathom_api_key = get_user_fathom_key(db, user_id, team_id)
+
+                # Create handler with user's Fathom key
+                user_slash_command_handler = SlackSlashCommandHandler(fathom_api_key=fathom_api_key)
+
+                response = user_slash_command_handler.handle_followup_command(
                     user_id=user_id,
                     channel_id=channel_id,
                     response_url=response_url
@@ -1678,6 +1715,172 @@ def handle_crono_task_submission(payload: dict):
             }
         })
 
+
+# ============================================================================
+# SETTINGS API ROUTES
+# ============================================================================
+
+@app.route('/settings', methods=['GET'])
+def settings_page():
+    """Serve the settings HTML page."""
+    return render_template('settings.html')
+
+
+@app.route('/api/settings', methods=['GET'])
+def get_user_settings_api():
+    """
+    Get user settings from database.
+
+    Expected header: X-User-Slack-ID
+    Returns: JSON with user settings (keys masked)
+    """
+    slack_user_id = request.headers.get('X-User-Slack-ID')
+
+    if not slack_user_id:
+        return jsonify({"error": "X-User-Slack-ID header required"}), 400
+
+    try:
+        with get_db() as db:
+            # Find tenant
+            tenant = db.query(Tenant).filter(Tenant.slack_team_id == 'T02R43CJEMA').first()
+            if not tenant:
+                return jsonify({"error": "Tenant not found"}), 404
+
+            # Find or create user
+            user = db.query(User).filter(
+                User.slack_user_id == slack_user_id,
+                User.tenant_id == tenant.id
+            ).first()
+
+            if not user:
+                # Create new user on first access
+                user = User(
+                    tenant_id=tenant.id,
+                    slack_user_id=slack_user_id,
+                    is_active=True
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+
+            # Find or create settings
+            if not user.settings:
+                settings = UserSettings(
+                    tenant_id=tenant.id,
+                    user_id=user.id
+                )
+                db.add(settings)
+                db.commit()
+                db.refresh(settings)
+            else:
+                settings = user.settings
+
+            # Return settings (mask sensitive keys)
+            response = {}
+            if settings.crono_public_key:
+                response['crono_public_key'] = '**masked**'
+            if settings.crono_private_key:
+                response['crono_private_key'] = '**masked**'
+            if settings.fathom_api_key:
+                response['fathom_api_key'] = '**masked**'
+            if settings.piper_api_key:
+                response['piper_api_key'] = '**masked**'
+            if settings.gmail_token:
+                response['gmail_token'] = '**masked**'
+            if settings.calendar_token:
+                response['calendar_token'] = '**masked**'
+            if settings.email_tone:
+                response['email_tone'] = settings.email_tone
+
+            return jsonify(response), 200
+
+    except Exception as e:
+        sys.stderr.write(f"Error in get_user_settings: {e}\n")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/settings', methods=['POST'])
+def save_user_settings_api():
+    """
+    Save user settings to database.
+
+    Expected header: X-User-Slack-ID
+    Expected body: JSON with settings to update
+    Returns: Success message
+    """
+    slack_user_id = request.headers.get('X-User-Slack-ID')
+
+    if not slack_user_id:
+        return jsonify({"error": "X-User-Slack-ID header required"}), 400
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
+    try:
+        with get_db() as db:
+            # Find tenant
+            tenant = db.query(Tenant).filter(Tenant.slack_team_id == 'T02R43CJEMA').first()
+            if not tenant:
+                return jsonify({"error": "Tenant not found"}), 404
+
+            # Find or create user
+            user = db.query(User).filter(
+                User.slack_user_id == slack_user_id,
+                User.tenant_id == tenant.id
+            ).first()
+
+            if not user:
+                # Create new user
+                user = User(
+                    tenant_id=tenant.id,
+                    slack_user_id=slack_user_id,
+                    is_active=True
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+
+            # Find or create settings
+            if not user.settings:
+                settings = UserSettings(
+                    tenant_id=tenant.id,
+                    user_id=user.id
+                )
+                db.add(settings)
+                db.commit()
+                db.refresh(settings)
+            else:
+                settings = user.settings
+
+            # Update only provided fields
+            if 'crono_public_key' in data and data['crono_public_key']:
+                settings.crono_public_key = data['crono_public_key']
+            if 'crono_private_key' in data and data['crono_private_key']:
+                settings.crono_private_key = data['crono_private_key']
+            if 'fathom_api_key' in data and data['fathom_api_key']:
+                settings.fathom_api_key = data['fathom_api_key']
+            if 'piper_api_key' in data and data['piper_api_key']:
+                settings.piper_api_key = data['piper_api_key']
+            if 'gmail_token' in data and data['gmail_token']:
+                settings.gmail_token = data['gmail_token']
+            if 'calendar_token' in data and data['calendar_token']:
+                settings.calendar_token = data['calendar_token']
+            if 'email_tone' in data:
+                settings.email_tone = data['email_tone']
+
+            db.commit()
+
+            return jsonify({"message": "Settings saved successfully"}), 200
+
+    except Exception as e:
+        sys.stderr.write(f"Error in save_user_settings: {e}\n")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# SERVER STARTUP
+# ============================================================================
 
 def start_webhook_server(port: int = 3000, debug: bool = False):
     """

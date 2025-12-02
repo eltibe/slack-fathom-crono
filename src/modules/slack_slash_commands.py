@@ -20,19 +20,20 @@ class SlackSlashCommandHandler:
     Handler for Slack slash commands.
     """
 
-    def __init__(self, bot_token: Optional[str] = None):
+    def __init__(self, bot_token: Optional[str] = None, fathom_api_key: Optional[str] = None):
         """
         Initialize slash command handler.
 
         Args:
             bot_token: Slack Bot Token. If not provided, reads from SLACK_BOT_TOKEN env var.
+            fathom_api_key: Fathom API key for the user. If not provided, uses env var.
         """
         self.bot_token = bot_token or os.getenv('SLACK_BOT_TOKEN')
         if not self.bot_token:
             raise ValueError("Slack Bot Token is required")
 
         self.client = WebClient(token=self.bot_token)
-        self.fathom = FathomClient()
+        self.fathom = FathomClient(api_key=fathom_api_key) if fathom_api_key else FathomClient()
 
     def handle_followup_command(self, user_id: str, channel_id: str, trigger_id: str, slack_web_client: WebClient):
         """
