@@ -13,6 +13,7 @@ import hashlib
 import time
 import sys
 import ssl
+import logging
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, render_template
@@ -39,6 +40,16 @@ from src.models.user_settings import UserSettings
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -70,7 +81,7 @@ def get_user_crm_credentials(db, slack_user_id: str, team_id: str) -> Optional[D
         # First find the tenant by slack_team_id to get the UUID
         tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
         if not tenant:
-            sys.stderr.write(f"Tenant not found for team_id: {team_id}\n")
+            logger.error(f"Tenant not found for team_id: {team_id}")
             return None
 
         # Then find the user with the tenant UUID
@@ -80,11 +91,11 @@ def get_user_crm_credentials(db, slack_user_id: str, team_id: str) -> Optional[D
         ).first()
 
         if not user:
-            sys.stderr.write(f"User not found: slack_user_id={slack_user_id}, tenant_id={tenant.id}\n")
+            logger.error(f"User not found: slack_user_id={slack_user_id}, tenant_id={tenant.id}")
             return None
 
         if not user.settings:
-            sys.stderr.write(f"User settings not found for user_id={user.id}\n")
+            logger.error(f"User settings not found for user_id={user.id}")
             return None
 
         return {
@@ -93,7 +104,7 @@ def get_user_crm_credentials(db, slack_user_id: str, team_id: str) -> Optional[D
             'private_key': user.settings.crono_private_key
         }
     except Exception as e:
-        sys.stderr.write(f"Error getting CRM credentials: {e}\n")
+        logger.error(f"Error getting CRM credentials: {e}")
         return None
 
 
@@ -103,7 +114,7 @@ def get_user_fathom_key(db, slack_user_id: str, team_id: str) -> Optional[str]:
         # First find the tenant by slack_team_id to get the UUID
         tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
         if not tenant:
-            sys.stderr.write(f"Tenant not found for team_id: {team_id}\n")
+            logger.error(f"Tenant not found for team_id: {team_id}")
             return None
 
         # Then find the user with the tenant UUID
@@ -113,16 +124,16 @@ def get_user_fathom_key(db, slack_user_id: str, team_id: str) -> Optional[str]:
         ).first()
 
         if not user:
-            sys.stderr.write(f"User not found: slack_user_id={slack_user_id}, tenant_id={tenant.id}\n")
+            logger.error(f"User not found: slack_user_id={slack_user_id}, tenant_id={tenant.id}")
             return None
 
         if not user.settings:
-            sys.stderr.write(f"User settings not found for user_id={user.id}\n")
+            logger.error(f"User settings not found for user_id={user.id}")
             return None
 
         return user.settings.fathom_api_key
     except Exception as e:
-        sys.stderr.write(f"Error getting Fathom API key: {e}\n")
+        logger.error(f"Error getting Fathom API key: {e}")
         return None
 
 
@@ -153,7 +164,7 @@ def get_user_api_keys(db, slack_user_id: str, team_id: str) -> Optional[Dict]:
             'fathom_api_key': user.settings.fathom_api_key
         }
     except Exception as e:
-        sys.stderr.write(f"Error getting API keys: {e}\n")
+        logger.error(f"Error getting API keys: {e}")
         return None
 
 
@@ -189,7 +200,7 @@ def slack_commands():
     # Verify the request is from Slack
     # TEMPORARY: Log but don't block for debugging
     if not verify_slack_request(request):
-        print("⚠️  Signature verification failed (allowing for debug)")
+        logger.warning("⚠️  Signature verification failed (allowing for debug)")
         # return jsonify({'error': 'Invalid signature'}), 403
 
     # Parse command data
@@ -199,14 +210,12 @@ def slack_commands():
     response_url = request.form.get('response_url')
 
     import sys
-    sys.stderr.write(f"📥 Received command: {command}\n")
-    sys.stderr.write(f"   User: {user_id}\n")
-    sys.stderr.write(f"   Channel: {channel_id}\n")
-    sys.stderr.flush()
+    logger.info(f"📥 Received command: {command}")
+    logger.info(f"   User: {user_id}")
+    logger.info(f"   Channel: {channel_id}")
 
     if command == '/followup' or command == '/meetings':
-        sys.stderr.write(f"✅ Handling {command} command\n")
-        sys.stderr.flush()
+        logger.info(f"✅ Handling {command} command")
 
         try:
             # Get user's Fathom API key from database
@@ -231,7 +240,7 @@ def slack_commands():
             return '', 200
 
         except Exception as e:
-            sys.stderr.write(f"❌ Error handling /followup: {e}\n")
+            logger.error(f"❌ Error handling /followup: {e}")
             import traceback
             traceback.print_exc(file=sys.stderr)
             return jsonify({
@@ -240,8 +249,7 @@ def slack_commands():
             })
 
     elif command == '/crono-add-task':
-        sys.stderr.write(f"📥 Received command: {command} from user {user_id}\\n")
-        sys.stderr.flush()
+        logger.info(f"📥 Received command: {command} from user {user_id}\\n")
 
         try:
             team_id = request.form.get('team_id')
@@ -329,13 +337,13 @@ def slack_commands():
             )
             return '', 200
         except SlackApiError as e:
-            sys.stderr.write(f"❌ Slack API error opening modal: {e.response}\\n")
+            logger.error(f"❌ Slack API error opening modal: {e.response}\\n")
             return jsonify({
                 "response_type": "ephemeral",
                 "text": f"❌ Could not open modal: {e.response.get('error', 'Slack error')}"
             })
 
-    print(f"⚠️  Unknown command: {command}")
+    logger.warning(f"⚠️  Unknown command: {command}")
     return jsonify({
         'response_type': 'ephemeral',
         'text': f'Unknown command: {command}'
@@ -415,7 +423,7 @@ def verify_slack_request(request) -> bool:
             signature=request.headers.get('X-Slack-Signature')
         )
     except Exception as e:
-        print(f"Signature verification failed: {e}")
+        logger.error(f"Signature verification failed: {e}")
         return False
 
 
@@ -542,16 +550,14 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
     import requests
 
     try:
-        sys.stderr.write(f"🔄 Processing meeting {recording_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"🔄 Processing meeting {recording_id}...")
 
         # Fetch meeting data
         fathom = FathomClient()
         meeting_data = fathom.get_specific_meeting_with_transcript(int(recording_id))
 
         if not meeting_data:
-            sys.stderr.write(f"❌ Meeting {recording_id} not found\n")
-            sys.stderr.flush()
+            logger.error(f"❌ Meeting {recording_id} not found")
 
             if response_url:
                 requests.post(response_url, json={
@@ -604,8 +610,7 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
         # Get meeting URL
         meeting_url = f"https://app.fathom.video/meetings/{recording_id}"
 
-        sys.stderr.write(f"✅ Successfully processed meeting: {meeting_title}\n")
-        sys.stderr.flush()
+        logger.info(f"✅ Successfully processed meeting: {meeting_title}")
 
         # Store processed data in conversation state for button handlers
         conversation_state[recording_id] = {
@@ -769,8 +774,7 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
             }, timeout=5)
 
     except Exception as e:
-        sys.stderr.write(f"❌ Error processing meeting: {str(e)}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error processing meeting: {str(e)}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -792,13 +796,11 @@ def handle_create_gmail_draft(payload: Dict):
         recording_id = payload['actions'][0]['value']
         response_url = payload.get('response_url')
 
-        sys.stderr.write(f"📧 Creating Gmail draft for recording {recording_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"📧 Creating Gmail draft for recording {recording_id}...")
 
         # Retrieve stored meeting data
         if recording_id not in conversation_state:
-            sys.stderr.write(f"❌ No data found for recording {recording_id}\n")
-            sys.stderr.flush()
+            logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
                 "replace_original": False,
@@ -821,8 +823,7 @@ def handle_create_gmail_draft(payload: Dict):
 
         def create_draft_in_background():
             try:
-                sys.stderr.write(f"🔄 Creating Gmail draft in background...\n")
-                sys.stderr.flush()
+                logger.info(f"🔄 Creating Gmail draft in background...")
 
                 gmail = GmailDraftCreator()
                 draft_id = gmail.create_draft_from_generated_email(
@@ -831,8 +832,7 @@ def handle_create_gmail_draft(payload: Dict):
                 )
 
                 if draft_id:
-                    sys.stderr.write(f"✅ Gmail draft created: {draft_id}\n")
-                    sys.stderr.flush()
+                    logger.info(f"✅ Gmail draft created: {draft_id}")
 
                     if response_url:
                         requests.post(response_url, json={
@@ -849,8 +849,7 @@ def handle_create_gmail_draft(payload: Dict):
                         }, timeout=5)
 
             except Exception as e:
-                sys.stderr.write(f"❌ Error creating Gmail draft: {e}\n")
-                sys.stderr.flush()
+                logger.error(f"❌ Error creating Gmail draft: {e}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
 
@@ -872,8 +871,7 @@ def handle_create_gmail_draft(payload: Dict):
         })
 
     except Exception as e:
-        sys.stderr.write(f"❌ Error in handle_create_gmail_draft: {e}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error in handle_create_gmail_draft: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -896,13 +894,11 @@ def handle_create_calendar_event(payload: Dict):
         recording_id = payload['actions'][0]['value']
         response_url = payload.get('response_url')
 
-        sys.stderr.write(f"📅 Creating calendar event for recording {recording_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"📅 Creating calendar event for recording {recording_id}...")
 
         # Retrieve stored meeting data
         if recording_id not in conversation_state:
-            sys.stderr.write(f"❌ No data found for recording {recording_id}\n")
-            sys.stderr.flush()
+            logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
                 "replace_original": False,
@@ -919,8 +915,7 @@ def handle_create_calendar_event(payload: Dict):
 
         def create_event_in_background():
             try:
-                sys.stderr.write(f"🔄 Creating calendar event in background...\n")
-                sys.stderr.flush()
+                logger.info(f"🔄 Creating calendar event in background...")
 
                 # Extract date from transcript using AI (instead of hardcoding)
                 transcript = state.get('transcript')
@@ -958,8 +953,7 @@ def handle_create_calendar_event(payload: Dict):
                 )
 
                 if event_id:
-                    sys.stderr.write(f"✅ Calendar event created: {event_id}\n")
-                    sys.stderr.flush()
+                    logger.info(f"✅ Calendar event created: {event_id}")
 
                     if response_url:
                         followup_date_str = followup_datetime.strftime('%B %d, %Y at %H:%M %Z')
@@ -985,8 +979,7 @@ def handle_create_calendar_event(payload: Dict):
                         }, timeout=5)
 
             except Exception as e:
-                sys.stderr.write(f"❌ Error creating calendar event: {e}\n")
-                sys.stderr.flush()
+                logger.error(f"❌ Error creating calendar event: {e}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
 
@@ -1008,8 +1001,7 @@ def handle_create_calendar_event(payload: Dict):
         })
 
     except Exception as e:
-        sys.stderr.write(f"❌ Error in handle_create_calendar_event: {e}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error in handle_create_calendar_event: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -1030,13 +1022,11 @@ def handle_create_crono_note(payload: Dict):
         recording_id = payload['actions'][0]['value']
         response_url = payload.get('response_url')
 
-        sys.stderr.write(f"📝 Creating Crono note for recording {recording_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"📝 Creating Crono note for recording {recording_id}...")
 
         # Retrieve stored meeting data
         if recording_id not in conversation_state:
-            sys.stderr.write(f"❌ No data found for recording {recording_id}\n")
-            sys.stderr.flush()
+            logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
                 "replace_original": False,
@@ -1061,8 +1051,7 @@ def handle_create_crono_note(payload: Dict):
 
         def create_note_in_background():
             try:
-                sys.stderr.write(f"🔄 Creating Crono note in background...\n")
-                sys.stderr.flush()
+                logger.info(f"🔄 Creating Crono note in background...")
 
                 # TODO: Get tenant's CRM type and credentials from database
                 # For now, use Crono with env variables (backward compatible)
@@ -1083,8 +1072,7 @@ def handle_create_crono_note(payload: Dict):
                 )
 
                 if not account:
-                    sys.stderr.write(f"⚠️  No Crono account found for domain {email_domain}\n")
-                    sys.stderr.flush()
+                    logger.warning(f"⚠️  No Crono account found for domain {email_domain}")
 
                     if response_url:
                         requests.post(response_url, json={
@@ -1097,8 +1085,7 @@ def handle_create_crono_note(payload: Dict):
                 account_id = account.get('objectId') or account.get('id')
                 account_name = account.get('name', 'Unknown')
 
-                sys.stderr.write(f"✅ Found Crono account: {account_name} ({account_id})\n")
-                sys.stderr.flush()
+                logger.info(f"✅ Found Crono account: {account_name} ({account_id})")
 
                 # Build Crono URL
                 crono_url = f"https://app.crono.one/accounts/{account_id}"
@@ -1112,8 +1099,7 @@ def handle_create_crono_note(payload: Dict):
                 )
 
                 if note_id:
-                    sys.stderr.write(f"✅ Crono note created: {note_id}\n")
-                    sys.stderr.flush()
+                    logger.info(f"✅ Crono note created: {note_id}")
 
                     success_text = f"✅ Crono note created successfully!\n\nAccount: {account_name}\nMeeting: {meeting_title}"
                     if response_url:
@@ -1178,8 +1164,7 @@ def handle_create_crono_note(payload: Dict):
                         }, timeout=5)
 
             except Exception as e:
-                sys.stderr.write(f"❌ Error creating Crono note: {e}\n")
-                sys.stderr.flush()
+                logger.error(f"❌ Error creating Crono note: {e}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
 
@@ -1201,8 +1186,7 @@ def handle_create_crono_note(payload: Dict):
         })
 
     except Exception as e:
-        sys.stderr.write(f"❌ Error in handle_create_crono_note: {e}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error in handle_create_crono_note: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -1222,8 +1206,7 @@ def handle_load_previous_meetings(payload: Dict):
         user_id = payload.get('user', {}).get('id')
         team_id = payload.get('team', {}).get('id')
 
-        sys.stderr.write(f"⏮️ Loading previous meetings for user {user_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"⏮️ Loading previous meetings for user {user_id}...")
 
         # Get user's Fathom API key
         with get_db() as db:
@@ -1280,8 +1263,7 @@ def handle_load_previous_meetings(payload: Dict):
         return jsonify({'status': 'ok'})
 
     except Exception as e:
-        sys.stderr.write(f"❌ Error in handle_load_previous_meetings: {e}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error in handle_load_previous_meetings: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -1302,13 +1284,11 @@ def handle_open_followup_edit_modal(payload: Dict):
         recording_id = payload['actions'][0]['value']
         trigger_id = payload.get('trigger_id')
 
-        sys.stderr.write(f"📝 Opening follow-up edit modal for recording {recording_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"📝 Opening follow-up edit modal for recording {recording_id}...")
 
         # Retrieve stored meeting data from conversation state
         if recording_id not in conversation_state:
-            sys.stderr.write(f"❌ No data found for recording {recording_id}\n")
-            sys.stderr.flush()
+            logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 'status': 'error',
                 'text': '❌ Meeting data not found. Please try processing the meeting again.'
@@ -1324,8 +1304,7 @@ def handle_open_followup_edit_modal(payload: Dict):
         user_id = state.get('user_id')
         team_id = state.get('team_id')
 
-        sys.stderr.write(f"✅ Retrieved state for {meeting_title}\n")
-        sys.stderr.flush()
+        logger.info(f"✅ Retrieved state for {meeting_title}")
 
         # Truncate initial values to Slack's 3000 character limit for text inputs
         def truncate_text(text, max_len=3000):
@@ -1479,14 +1458,12 @@ def handle_open_followup_edit_modal(payload: Dict):
             }
         )
 
-        sys.stderr.write(f"✅ Modal opened successfully\n")
-        sys.stderr.flush()
+        logger.info(f"✅ Modal opened successfully")
 
         return jsonify({'status': 'ok'})
 
     except Exception as e:
-        sys.stderr.write(f"❌ Error in handle_open_followup_edit_modal: {e}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error in handle_open_followup_edit_modal: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -1506,13 +1483,11 @@ def handle_view_crono_deals(payload: Dict):
         recording_id = payload['actions'][0]['value']
         response_url = payload.get('response_url')
 
-        sys.stderr.write(f"💰 Viewing Crono deals for recording {recording_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"💰 Viewing Crono deals for recording {recording_id}...")
 
         # Retrieve stored meeting data
         if recording_id not in conversation_state:
-            sys.stderr.write(f"❌ No data found for recording {recording_id}\n")
-            sys.stderr.flush()
+            logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
                 "replace_original": False,
@@ -1534,8 +1509,7 @@ def handle_view_crono_deals(payload: Dict):
 
         def view_deals_in_background():
             try:
-                sys.stderr.write(f"🔄 Fetching Crono deals in background...\n")
-                sys.stderr.flush()
+                logger.info(f"🔄 Fetching Crono deals in background...")
 
                 # TODO: Get tenant's CRM type and credentials from database
                 # For now, use Crono with env variables (backward compatible)
@@ -1556,8 +1530,7 @@ def handle_view_crono_deals(payload: Dict):
                 )
 
                 if not account:
-                    sys.stderr.write(f"⚠️  No Crono account found for domain {email_domain}\n")
-                    sys.stderr.flush()
+                    logger.warning(f"⚠️  No Crono account found for domain {email_domain}")
 
                     if response_url:
                         requests.post(response_url, json={
@@ -1570,8 +1543,7 @@ def handle_view_crono_deals(payload: Dict):
                 account_id = account.get('objectId') or account.get('id')
                 account_name = account.get('name', 'Unknown')
 
-                sys.stderr.write(f"✅ Found Crono account: {account_name} ({account_id})\n")
-                sys.stderr.flush()
+                logger.info(f"✅ Found Crono account: {account_name} ({account_id})")
 
                 # Build Crono URL
                 crono_url = f"https://app.crono.one/accounts/{account_id}"
@@ -1580,8 +1552,7 @@ def handle_view_crono_deals(payload: Dict):
                 deals = crm_provider.get_deals(account_id, limit=100)
 
                 if deals:
-                    sys.stderr.write(f"✅ Found {len(deals)} deals for account {account_id}\n")
-                    sys.stderr.flush()
+                    logger.info(f"✅ Found {len(deals)} deals for account {account_id}")
 
                     # Format deals for Slack display
                     deals_text = f"💰 *Crono Deals for {account_name}:*\n\n"
@@ -1625,8 +1596,7 @@ def handle_view_crono_deals(payload: Dict):
                             ]
                         }, timeout=5)
                 else:
-                    sys.stderr.write(f"⚠️ No deals found for account {account_id}\n")
-                    sys.stderr.flush()
+                    logger.warning(f"⚠️ No deals found for account {account_id}")
                     no_deals_text = f"⚠️ No Crono deals found for account '{account_name}'."
                     if response_url:
                         requests.post(response_url, json={
@@ -1659,8 +1629,7 @@ def handle_view_crono_deals(payload: Dict):
                         }, timeout=5)
 
             except Exception as e:
-                sys.stderr.write(f"❌ Error fetching Crono deals: {e}\n")
-                sys.stderr.flush()
+                logger.error(f"❌ Error fetching Crono deals: {e}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
 
@@ -1682,8 +1651,7 @@ def handle_view_crono_deals(payload: Dict):
         })
 
     except Exception as e:
-        sys.stderr.write(f"❌ Error in handle_view_crono_deals: {e}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error in handle_view_crono_deals: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -1881,8 +1849,7 @@ def handle_create_crono_task_from_modal(payload: Dict):
         team_id = payload.get('team', {}).get('id')
         trigger_id = payload.get('trigger_id')
 
-        sys.stderr.write(f"✅ Opening task creation modal for recording {recording_id}...\n")
-        sys.stderr.flush()
+        logger.info(f"✅ Opening task creation modal for recording {recording_id}...")
 
         # Get meeting data from conversation_state if available
         meeting_title = "Follow-up Task"
@@ -1979,15 +1946,13 @@ def handle_create_crono_task_from_modal(payload: Dict):
         return jsonify({'status': 'ok'})
 
     except SlackApiError as e:
-        sys.stderr.write(f"❌ Slack API error opening task modal: {e.response}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Slack API error opening task modal: {e.response}")
         return jsonify({
             "response_type": "ephemeral",
             "text": f"❌ Could not open task modal: {e.response.get('error', 'Slack error')}"
         })
     except Exception as e:
-        sys.stderr.write(f"❌ Error in handle_create_crono_task_from_modal: {e}\n")
-        sys.stderr.flush()
+        logger.error(f"❌ Error in handle_create_crono_task_from_modal: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
 
@@ -2005,7 +1970,7 @@ def handle_block_suggestion(payload: dict):
 
     if action_id == 'crono_prospect_select':
         query = payload.get('value', '')
-        sys.stderr.write(f"🔍 [crono_prospect_select] query='{query}'\\n")
+        logger.debug(f"🔍 [crono_prospect_select] query='{query}'\\n")
         options: List[Dict] = []
 
         try:
@@ -2014,7 +1979,7 @@ def handle_block_suggestion(payload: dict):
                 if credentials:
                     crm_provider = CronoProvider(credentials=credentials)
                     prospects = crm_provider.search_prospects(query=query, account_id=None, limit=200)
-                    sys.stderr.write(f"  - 📞 Found {len(prospects)} prospects\\n")
+                    logger.debug(f"  - 📞 Found {len(prospects)} prospects\\n")
 
                     if len(prospects) == 0:
                         options.append({
@@ -2025,7 +1990,7 @@ def handle_block_suggestion(payload: dict):
                         # Slack has a limit of ~100 options for external_select
                         max_options = 100
                         if len(prospects) > max_options:
-                            sys.stderr.write(f"  - Too many results ({len(prospects)}), limiting to {max_options}\\n")
+                            logger.debug(f"  - Too many results ({len(prospects)}), limiting to {max_options}\\n")
 
                         for i, p in enumerate(prospects):
                             if i >= max_options:
@@ -2046,14 +2011,13 @@ def handle_block_suggestion(payload: dict):
                                 "value": value_str[:75]  # Slack limit
                             })
 
-                        sys.stderr.write(f"  - Returning {len(options)} options\\n")
-                        sys.stderr.write(f"  - Response JSON (first 500 chars): {json.dumps({'options': options}, ensure_ascii=False)[:500]}\\n")
+                        logger.debug(f"  - Returning {len(options)} options\\n")
+                        logger.debug(f"  - Response JSON (first 500 chars): {json.dumps({'options': options}, ensure_ascii=False)[:500]}\\n")
         except Exception as e:
-            sys.stderr.write(f"🔥🔥🔥 EXCEPTION in crono_prospect_select: {e}\\n")
+            logger.error(f"🔥🔥🔥 EXCEPTION in crono_prospect_select: {e}\\n")
             import traceback
             traceback.print_exc(file=sys.stderr)
 
-        sys.stderr.flush()
         return jsonify({"options": options})
 
     return jsonify({"options": []})
@@ -2088,8 +2052,7 @@ def handle_followup_meeting_submission(payload: dict):
             }
         })
 
-    sys.stderr.write(f"📝 Processing meeting {selected_recording_id} for followup modal...\n")
-    sys.stderr.flush()
+    logger.info(f"📝 Processing meeting {selected_recording_id} for followup modal...")
 
     # Get channel_id from original modal metadata
     original_metadata = json.loads(view.get('private_metadata', '{}'))
@@ -2101,8 +2064,7 @@ def handle_followup_meeting_submission(payload: dict):
         # Open/ensure DM conversation exists
         dm_response = slack_web_client.conversations_open(users=user_id)
         channel_id = dm_response['channel']['id']
-        sys.stderr.write(f"DEBUG: Opened DM conversation: {channel_id}\n")
-        sys.stderr.flush()
+        logger.debug(f"DEBUG: Opened DM conversation: {channel_id}")
     else:
         channel_id = metadata_channel or user_id
 
@@ -2122,8 +2084,7 @@ def handle_followup_meeting_submission(payload: dict):
     )
 
     processing_ts = processing_msg['ts']
-    sys.stderr.write(f"✅ Sent processing message (ts: {processing_ts})\n")
-    sys.stderr.flush()
+    logger.info(f"✅ Sent processing message (ts: {processing_ts})")
 
     # Process AI generation in background thread
     def process_and_update_message():
@@ -2138,8 +2099,7 @@ def handle_followup_meeting_submission(payload: dict):
             meeting_data = fathom.get_specific_meeting_with_transcript(int(selected_recording_id))
 
             if not meeting_data:
-                sys.stderr.write(f"❌ Meeting {selected_recording_id} not found\n")
-                sys.stderr.flush()
+                logger.error(f"❌ Meeting {selected_recording_id} not found")
                 return
 
             meeting_title = meeting_data.get('meeting_title') or meeting_data.get('title', 'Untitled Meeting')
@@ -2156,8 +2116,7 @@ def handle_followup_meeting_submission(payload: dict):
             ]
             external_attendees_str = ', '.join(external_emails) if external_emails else 'N/A'
 
-            sys.stderr.write(f"🤖 Generating AI content for: {meeting_title}\n")
-            sys.stderr.flush()
+            logger.info(f"🤖 Generating AI content for: {meeting_title}")
 
             # Generate email with Claude
             claude_gen = ClaudeEmailGenerator()
@@ -2206,8 +2165,7 @@ def handle_followup_meeting_submission(payload: dict):
 
             crm_note_content = format_sales_data_plain(sales_data)
 
-            sys.stderr.write(f"✅ AI content generated successfully\n")
-            sys.stderr.flush()
+            logger.info(f"✅ AI content generated successfully")
 
             # Convert HTML to plain text for modal display
             def html_to_text(html_text):
@@ -2365,8 +2323,7 @@ def handle_followup_meeting_submission(payload: dict):
                 'transcript': transcript
             }
 
-            sys.stderr.write(f"✅ Content generated, updating message with 'View & Edit' button\n")
-            sys.stderr.flush()
+            logger.info(f"✅ Content generated, updating message with 'View & Edit' button")
 
             # Step 3: Update the "Processing..." message with "Ready" + "View & Edit" button
             slack_web_client.chat_update(
@@ -2407,12 +2364,10 @@ def handle_followup_meeting_submission(payload: dict):
                 ]
             )
 
-            sys.stderr.write(f"✅ Message updated with 'View & Edit' button\n")
-            sys.stderr.flush()
+            logger.info(f"✅ Message updated with 'View & Edit' button")
 
         except Exception as e:
-            sys.stderr.write(f"❌ Error in process_and_update_message: {e}\n")
-            sys.stderr.flush()
+            logger.error(f"❌ Error in process_and_update_message: {e}")
             import traceback
             traceback.print_exc(file=sys.stderr)
 
@@ -2530,11 +2485,11 @@ def handle_crono_task_submission(payload: dict):
                     )
                 except Exception as notify_error:
                     # Log but don't fail - task was already created successfully
-                    sys.stderr.write(f"⚠️  Could not send confirmation message: {notify_error}\n")
+                    logger.warning(f"⚠️  Could not send confirmation message: {notify_error}")
 
             return jsonify({"response_action": "clear"})
     except Exception as e:
-        sys.stderr.write(f"🔥🔥🔥 Error in task creation view_submission: {e}\\n")
+        logger.error(f"🔥🔥🔥 Error in task creation view_submission: {e}\\n")
         return jsonify({
             "response_action": "errors",
             "errors": {
@@ -2622,7 +2577,7 @@ def get_user_settings_api():
             return jsonify(response), 200
 
     except Exception as e:
-        sys.stderr.write(f"Error in get_user_settings: {e}\n")
+        logger.error(f"Error in get_user_settings: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -2701,7 +2656,7 @@ def save_user_settings_api():
             return jsonify({"message": "Settings saved successfully"}), 200
 
     except Exception as e:
-        sys.stderr.write(f"Error in save_user_settings: {e}\n")
+        logger.error(f"Error in save_user_settings: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -2744,13 +2699,13 @@ def start_webhook_server(port: int = 3000, debug: bool = False):
         port: Port to run the server on (default: 3000)
         debug: Enable debug mode (default: False)
     """
-    print(f"🚀 Starting Slack webhook handler on port {port}...")
-    print(f"📡 Webhook URLs:")
-    print(f"   Events: http://localhost:{port}/slack/events")
-    print(f"   Interactions: http://localhost:{port}/slack/interactions")
-    print(f"\n⚠️  Make sure to expose this with ngrok for Slack to reach it:")
-    print(f"   ngrok http {port}")
-    print(f"\nPress Ctrl+C to stop\n")
+    logger.info(f"🚀 Starting Slack webhook handler on port {port}...")
+    logger.info(f"📡 Webhook URLs:")
+    logger.info(f"   Events: http://localhost:{port}/slack/events")
+    logger.info(f"   Interactions: http://localhost:{port}/slack/interactions")
+    logger.info(f"\n⚠️  Make sure to expose this with ngrok for Slack to reach it:")
+    logger.info(f"   ngrok http {port}")
+    logger.info(f"\nPress Ctrl+C to stop\n")
 
     app.run(host='0.0.0.0', port=port, debug=debug)
 
