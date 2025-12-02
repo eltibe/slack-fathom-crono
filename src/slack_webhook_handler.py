@@ -14,7 +14,7 @@ import time
 import sys
 import ssl
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, render_template
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -208,59 +208,36 @@ def slack_commands():
         sys.stderr.write(f"✅ Handling {command} command\n")
         sys.stderr.flush()
 
-        # Respond immediately to avoid timeout
-        import threading
-        def process_in_background():
-            try:
-                sys.stderr.write("🔄 Starting background processing...\n")
-                sys.stderr.flush()
+        try:
+            # Get user's Fathom API key from database
+            team_id = request.form.get('team_id')
+            trigger_id = request.form.get('trigger_id')
 
-                # Get user's Fathom API key from database
-                team_id = request.form.get('team_id')
-                with get_db() as db:
-                    fathom_api_key = get_user_fathom_key(db, user_id, team_id)
+            with get_db() as db:
+                fathom_api_key = get_user_fathom_key(db, user_id, team_id)
 
-                # Create handler with user's Fathom key
-                user_slash_command_handler = SlackSlashCommandHandler(fathom_api_key=fathom_api_key)
+            # Create handler with user's Fathom key
+            user_slash_command_handler = SlackSlashCommandHandler(fathom_api_key=fathom_api_key)
 
-                response = user_slash_command_handler.handle_followup_command(
-                    user_id=user_id,
-                    channel_id=channel_id,
-                    response_url=response_url
-                )
+            # Open modal immediately (no background thread needed)
+            user_slash_command_handler.handle_followup_command(
+                user_id=user_id,
+                channel_id=channel_id,
+                trigger_id=trigger_id,
+                slack_web_client=slack_web_client
+            )
 
-                sys.stderr.write(f"📤 Got response, sending to {response_url[:50]}...\n")
-                sys.stderr.write(f"   Response has {len(response.get('blocks', []))} blocks\n")
+            # Return empty 200 OK (modal already opened)
+            return '', 200
 
-                # Debug: print full response
-                import json
-                sys.stderr.write(f"   Full response JSON:\n{json.dumps(response, indent=2)}\n")
-                sys.stderr.flush()
-
-                # Send response to response_url (delayed response)
-                import requests
-                resp = requests.post(response_url, json=response, timeout=5)
-                sys.stderr.write(f"✅ Sent delayed response (status: {resp.status_code})\n")
-
-                if resp.status_code != 200:
-                    sys.stderr.write(f"❌ Slack error response: {resp.text[:200]}\n")
-
-                sys.stderr.flush()
-            except Exception as e:
-                sys.stderr.write(f"❌ Error in background processing: {e}\n")
-                sys.stderr.flush()
-                import traceback
-                traceback.print_exc(file=sys.stderr)
-
-        # Start background processing
-        thread = threading.Thread(target=process_in_background)
-        thread.start()
-
-        # Return immediate acknowledgment
-        return jsonify({
-            "response_type": "ephemeral",
-            "text": "⏳ Loading today's meetings..."
-        })
+        except Exception as e:
+            sys.stderr.write(f"❌ Error handling /followup: {e}\n")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            return jsonify({
+                "response_type": "ephemeral",
+                "text": f"❌ Error: {str(e)}"
+            })
 
     elif command == '/crono-add-task':
         sys.stderr.write(f"📥 Received command: {command} from user {user_id}\\n")
@@ -401,6 +378,20 @@ def slack_interactions():
                 return handle_create_crono_note(payload)
             elif action_id == 'view_crono_deals':
                 return handle_view_crono_deals(payload)
+            elif action_id == 'load_previous_meetings':
+                return handle_load_previous_meetings(payload)
+            elif action_id == 'create_gmail_draft_from_modal':
+                return handle_create_gmail_draft_from_modal(payload)
+            elif action_id == 'create_calendar_event_from_modal':
+                return handle_create_calendar_event_from_modal(payload)
+            elif action_id == 'push_note_to_crono_from_modal':
+                return handle_push_note_to_crono_from_modal(payload)
+            elif action_id == 'view_crono_deals_from_modal':
+                return handle_view_crono_deals_from_modal(payload)
+            elif action_id == 'create_crono_task_from_modal':
+                return handle_create_crono_task_from_modal(payload)
+            elif action_id == 'open_followup_edit_modal':
+                return handle_open_followup_edit_modal(payload)
 
     elif interaction_type == 'block_suggestion':
         return handle_block_suggestion(payload)
@@ -409,6 +400,8 @@ def slack_interactions():
         callback_id = payload.get('view', {}).get('callback_id')
         if callback_id == 'crono_task_modal':
             return handle_crono_task_submission(payload)
+        elif callback_id == 'followup_meeting_select_modal':
+            return handle_followup_meeting_submission(payload)
 
     return jsonify({'status': 'ok'})
 
@@ -1220,6 +1213,289 @@ def handle_create_crono_note(payload: Dict):
         })
 
 
+def handle_load_previous_meetings(payload: Dict):
+    """Handle when user clicks 'Load Previous Meetings' button in modal."""
+    import sys
+
+    try:
+        view_id = payload.get('view', {}).get('id')
+        user_id = payload.get('user', {}).get('id')
+        team_id = payload.get('team', {}).get('id')
+
+        sys.stderr.write(f"⏮️ Loading previous meetings for user {user_id}...\n")
+        sys.stderr.flush()
+
+        # Get user's Fathom API key
+        with get_db() as db:
+            fathom_api_key = get_user_fathom_key(db, user_id, team_id)
+
+        # Create handler with user's Fathom key
+        slash_handler = SlackSlashCommandHandler(fathom_api_key=fathom_api_key)
+
+        # Get yesterday's meetings
+        meetings = slash_handler._get_yesterdays_meetings()
+
+        if not meetings:
+            # Try last week if yesterday is empty
+            from datetime import timedelta
+            last_week_date = datetime.now(timezone.utc).date() - timedelta(days=7)
+            meetings = slash_handler._get_meetings_by_date(last_week_date)
+            day_label = "Last Week"
+        else:
+            day_label = "Yesterday"
+
+        if not meetings:
+            # No meetings found
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "📭 No meetings found in the last week."
+                    }
+                }
+            ]
+        else:
+            # Build new blocks with previous meetings (no load more button)
+            blocks = slash_handler._build_meeting_selection_modal_blocks(
+                meetings,
+                day_label=day_label,
+                show_load_more=False
+            )
+
+        # Update the modal view
+        slack_web_client.views_update(
+            view_id=view_id,
+            view={
+                "type": "modal",
+                "callback_id": "followup_meeting_select_modal",
+                "title": {"type": "plain_text", "text": "Meeting Follow-up"},
+                "submit": {"type": "plain_text", "text": "Next"},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "blocks": blocks,
+                "private_metadata": payload.get('view', {}).get('private_metadata', '{}')
+            }
+        )
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        sys.stderr.write(f"❌ Error in handle_load_previous_meetings: {e}\n")
+        sys.stderr.flush()
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+
+        return jsonify({
+            "response_action": "errors",
+            "errors": {
+                "load_previous_meetings_block": f"Error loading meetings: {str(e)}"
+            }
+        })
+
+
+def handle_open_followup_edit_modal(payload: Dict):
+    """Handle when user clicks 'View & Edit' button to open modal with editable fields."""
+    import sys
+
+    try:
+        # Extract recording_id from button value
+        recording_id = payload['actions'][0]['value']
+        trigger_id = payload.get('trigger_id')
+
+        sys.stderr.write(f"📝 Opening follow-up edit modal for recording {recording_id}...\n")
+        sys.stderr.flush()
+
+        # Retrieve stored meeting data from conversation state
+        if recording_id not in conversation_state:
+            sys.stderr.write(f"❌ No data found for recording {recording_id}\n")
+            sys.stderr.flush()
+            return jsonify({
+                'status': 'error',
+                'text': '❌ Meeting data not found. Please try processing the meeting again.'
+            })
+
+        # Get data from conversation state
+        state = conversation_state[recording_id]
+        meeting_title = state.get('meeting_title', 'Meeting')
+        meeting_summary = state.get('meeting_summary', '')
+        final_email = state.get('final_email', '')
+        crm_note = state.get('crm_note', '')
+        external_attendees_str = state.get('external_attendees_str', 'N/A')
+        user_id = state.get('user_id')
+        team_id = state.get('team_id')
+
+        sys.stderr.write(f"✅ Retrieved state for {meeting_title}\n")
+        sys.stderr.flush()
+
+        # Truncate initial values to Slack's 3000 character limit for text inputs
+        def truncate_text(text, max_len=3000):
+            if not text:
+                return ""
+            if len(text) <= max_len:
+                return text
+            return text[:max_len]
+
+        # Prepare private metadata
+        private_metadata = {
+            "recording_id": recording_id,
+            "user_id": user_id,
+            "team_id": team_id
+        }
+
+        # Open modal with editable fields
+        slack_web_client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": "followup_edit_modal",
+                "title": {"type": "plain_text", "text": "Edit Follow-up"},
+                "submit": {"type": "plain_text", "text": "Done"},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "private_metadata": json.dumps(private_metadata),
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": meeting_title[:150]  # Slack header text limit
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*External Attendees:* {external_attendees_str}"
+                        }
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "summary_block",
+                        "optional": True,
+                        "label": {"type": "plain_text", "text": "Meeting Summary"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "summary_input",
+                            "multiline": True,
+                            "initial_value": truncate_text(meeting_summary),
+                            "placeholder": {"type": "plain_text", "text": "Edit meeting summary..."}
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "email_block",
+                        "optional": True,
+                        "label": {"type": "plain_text", "text": "Follow-up Email"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "email_input",
+                            "multiline": True,
+                            "initial_value": truncate_text(final_email),
+                            "placeholder": {"type": "plain_text", "text": "Edit follow-up email..."}
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "crm_note_block",
+                        "optional": True,
+                        "label": {"type": "plain_text", "text": "CRM Note"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "crm_note_input",
+                            "multiline": True,
+                            "initial_value": truncate_text(crm_note),
+                            "placeholder": {"type": "plain_text", "text": "Edit CRM note..."}
+                        }
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*Actions:* Click any button below to execute that action"
+                        }
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "action_id": "create_gmail_draft_from_modal",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "📧 Gmail Draft"
+                                },
+                                "style": "primary",
+                                "value": recording_id
+                            },
+                            {
+                                "type": "button",
+                                "action_id": "create_calendar_event_from_modal",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "📅 Calendar Event"
+                                },
+                                "value": recording_id
+                            },
+                            {
+                                "type": "button",
+                                "action_id": "push_note_to_crono_from_modal",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "📝 Crono Note"
+                                },
+                                "value": recording_id
+                            }
+                        ]
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "action_id": "view_crono_deals_from_modal",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "👁️ View Deals"
+                                },
+                                "value": recording_id
+                            },
+                            {
+                                "type": "button",
+                                "action_id": "create_crono_task_from_modal",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "✅ Create Task"
+                                },
+                                "value": recording_id
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+
+        sys.stderr.write(f"✅ Modal opened successfully\n")
+        sys.stderr.flush()
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        sys.stderr.write(f"❌ Error in handle_open_followup_edit_modal: {e}\n")
+        sys.stderr.flush()
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+
+        return jsonify({
+            'status': 'error',
+            'text': f'❌ Error opening modal: {str(e)}'
+        })
+
+
 def handle_view_crono_deals(payload: Dict):
     """Handle when user clicks 'View Crono Deals' button."""
     import sys
@@ -1554,6 +1830,173 @@ def execute_selected_actions(thread_ts: str, state: Dict):
         del conversation_state[thread_ts]
 
 
+def handle_create_gmail_draft_from_modal(payload: Dict):
+    """
+    Handle Gmail draft creation from modal button.
+    Uses data from conversation_state (already generated).
+    """
+    # NOTE: This function reuses the existing handle_create_gmail_draft logic
+    # The data is already in conversation_state from handle_followup_meeting_submission
+    return handle_create_gmail_draft(payload)
+
+
+def handle_create_calendar_event_from_modal(payload: Dict):
+    """
+    Handle calendar event creation from modal button.
+    Uses data from conversation_state (already generated).
+    """
+    # NOTE: This function reuses the existing handle_create_calendar_event logic
+    return handle_create_calendar_event(payload)
+
+
+def handle_push_note_to_crono_from_modal(payload: Dict):
+    """
+    Handle Crono note creation from modal button.
+    Uses data from conversation_state (already generated).
+    """
+    # NOTE: This function reuses the existing handle_create_crono_note logic
+    return handle_create_crono_note(payload)
+
+
+def handle_view_crono_deals_from_modal(payload: Dict):
+    """
+    Handle viewing Crono deals from modal button.
+    Uses data from conversation_state (already generated).
+    """
+    # NOTE: This function reuses the existing handle_view_crono_deals logic
+    return handle_view_crono_deals(payload)
+
+
+def handle_create_crono_task_from_modal(payload: Dict):
+    """
+    Handle creating Crono task from modal button.
+    Opens a new modal for task creation using the external_select for contact search.
+    """
+    import sys
+
+    try:
+        # Get recording_id from button value (if available)
+        recording_id = payload.get('actions', [{}])[0].get('value')
+        user_id = payload.get('user', {}).get('id')
+        team_id = payload.get('team', {}).get('id')
+        trigger_id = payload.get('trigger_id')
+
+        sys.stderr.write(f"✅ Opening task creation modal for recording {recording_id}...\n")
+        sys.stderr.flush()
+
+        # Get meeting data from conversation_state if available
+        meeting_title = "Follow-up Task"
+        if recording_id and recording_id in conversation_state:
+            state = conversation_state[recording_id]
+            meeting_title = state.get('meeting_title', 'Follow-up Task')
+
+        # Get today's date as initial date
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Open the same task creation modal as /crono-add-task command
+        slack_web_client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": "crono_task_modal",
+                "title": {"type": "plain_text", "text": "Create CRM Task"},
+                "submit": {"type": "plain_text", "text": "Create"},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "private_metadata": json.dumps({
+                    "user_id": user_id,
+                    "team_id": team_id,
+                    "recording_id": recording_id
+                }),
+                "blocks": [
+                    {
+                        "type": "input",
+                        "block_id": "crono_prospect_block",
+                        "label": {"type": "plain_text", "text": "Contact"},
+                        "element": {
+                            "type": "external_select",
+                            "action_id": "crono_prospect_select",
+                            "placeholder": {"type": "plain_text", "text": "Search for a contact..."},
+                            "min_query_length": 2
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "crono_subject_block",
+                        "label": {"type": "plain_text", "text": "Subject"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "crono_task_subject",
+                            "initial_value": f"Follow-up: {meeting_title}",
+                            "placeholder": {"type": "plain_text", "text": "Task subject"}
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "crono_date_block",
+                        "label": {"type": "plain_text", "text": "Day"},
+                        "element": {
+                            "type": "datepicker",
+                            "action_id": "crono_task_date",
+                            "initial_date": today,
+                            "placeholder": {"type": "plain_text", "text": "Select day"}
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "crono_type_block",
+                        "label": {"type": "plain_text", "text": "Task type"},
+                        "element": {
+                            "type": "static_select",
+                            "action_id": "crono_task_type",
+                            "initial_option": {
+                                "text": {"type": "plain_text", "text": "Call"},
+                                "value": "call"
+                            },
+                            "options": [
+                                {"text": {"type": "plain_text", "text": "Email"}, "value": "email"},
+                                {"text": {"type": "plain_text", "text": "Call"}, "value": "call"},
+                                {"text": {"type": "plain_text", "text": "LinkedIn Message"}, "value": "linkedin"},
+                                {"text": {"type": "plain_text", "text": "InMail"}, "value": "inmail"}
+                            ]
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "crono_description_block",
+                        "optional": True,
+                        "label": {"type": "plain_text", "text": "Description (optional)"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "crono_task_description",
+                            "multiline": True,
+                            "placeholder": {"type": "plain_text", "text": "Task details"}
+                        }
+                    }
+                ]
+            }
+        )
+
+        return jsonify({'status': 'ok'})
+
+    except SlackApiError as e:
+        sys.stderr.write(f"❌ Slack API error opening task modal: {e.response}\n")
+        sys.stderr.flush()
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f"❌ Could not open task modal: {e.response.get('error', 'Slack error')}"
+        })
+    except Exception as e:
+        sys.stderr.write(f"❌ Error in handle_create_crono_task_from_modal: {e}\n")
+        sys.stderr.flush()
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f"❌ Error: {str(e)}"
+        })
+
+
 def handle_block_suggestion(payload: dict):
     """Handler for external select suggestions (e.g., prospect search)."""
     action_id = payload.get('action_id')
@@ -1614,6 +2057,390 @@ def handle_block_suggestion(payload: dict):
         return jsonify({"options": options})
 
     return jsonify({"options": []})
+
+
+def handle_followup_meeting_submission(payload: dict):
+    """
+    Handle submission of the first modal (meeting selection).
+    Opens a second modal with editable AI-generated content.
+    """
+    import sys
+    import threading
+    import requests
+
+    view = payload.get('view', {})
+    user = payload.get('user', {})
+    user_id = user.get('id')
+    team_id = payload.get('team', {}).get('id')
+
+    # Extract selected meeting ID from modal
+    state = view.get('state', {}).get('values', {})
+    meeting_block = state.get('meeting_selection_block', {})
+    meeting_select = meeting_block.get('selected_meeting_id', {})
+    selected_option = meeting_select.get('selected_option', {})
+    selected_recording_id = selected_option.get('value')
+
+    if not selected_recording_id:
+        return jsonify({
+            "response_action": "errors",
+            "errors": {
+                "meeting_selection_block": "Please select a meeting"
+            }
+        })
+
+    sys.stderr.write(f"📝 Processing meeting {selected_recording_id} for followup modal...\n")
+    sys.stderr.flush()
+
+    # Get channel_id from original modal metadata
+    original_metadata = json.loads(view.get('private_metadata', '{}'))
+    metadata_channel = original_metadata.get('channel_id')
+
+    # Send "Processing..." message BEFORE starting background thread
+    # For DMs, open a conversation first to get the proper channel ID
+    if metadata_channel and metadata_channel.startswith('D'):
+        # Open/ensure DM conversation exists
+        dm_response = slack_web_client.conversations_open(users=user_id)
+        channel_id = dm_response['channel']['id']
+        sys.stderr.write(f"DEBUG: Opened DM conversation: {channel_id}\n")
+        sys.stderr.flush()
+    else:
+        channel_id = metadata_channel or user_id
+
+    # Step 1: Send immediate "Processing..." message
+    processing_msg = slack_web_client.chat_postMessage(
+        channel=channel_id,
+        text=f"⏳ Generating follow-up content... (30-60s)",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"⏳ *Generating follow-up content...*\n\nThis may take 30-60 seconds. You'll be notified when ready."
+                }
+            }
+        ]
+    )
+
+    processing_ts = processing_msg['ts']
+    sys.stderr.write(f"✅ Sent processing message (ts: {processing_ts})\n")
+    sys.stderr.flush()
+
+    # Process AI generation in background thread
+    def process_and_update_message():
+        """Background thread to generate AI content and update message."""
+        try:
+            # Get user's Fathom API key
+            with get_db() as db:
+                fathom_api_key = get_user_fathom_key(db, user_id, team_id)
+
+            # Fetch meeting data
+            fathom = FathomClient(api_key=fathom_api_key)
+            meeting_data = fathom.get_specific_meeting_with_transcript(int(selected_recording_id))
+
+            if not meeting_data:
+                sys.stderr.write(f"❌ Meeting {selected_recording_id} not found\n")
+                sys.stderr.flush()
+                return
+
+            meeting_title = meeting_data.get('meeting_title') or meeting_data.get('title', 'Untitled Meeting')
+            meeting_language = meeting_data.get('transcript_language')
+            transcript = fathom.format_transcript_for_ai(meeting_data)
+
+            # Extract external emails
+            external_emails = []
+            calendar_invitees = meeting_data.get('calendar_invitees', [])
+            external_emails = [
+                invitee['email']
+                for invitee in calendar_invitees
+                if invitee.get('is_external', False)
+            ]
+            external_attendees_str = ', '.join(external_emails) if external_emails else 'N/A'
+
+            sys.stderr.write(f"🤖 Generating AI content for: {meeting_title}\n")
+            sys.stderr.flush()
+
+            # Generate email with Claude
+            claude_gen = ClaudeEmailGenerator()
+            final_email = claude_gen.generate_followup_email(
+                transcript=transcript,
+                context=None,
+                tone='professional',
+                meeting_language=meeting_language
+            )
+
+            # Generate meeting summary
+            summary_gen = MeetingSummaryGenerator()
+            meeting_summary = summary_gen.generate_calendar_summary(
+                transcript,
+                meeting_title,
+                meeting_language
+            )
+
+            # Extract sales insights (in English for CRM)
+            sales_gen = SalesSummaryGenerator()
+            sales_data = sales_gen.extract_sales_data(
+                transcript=transcript,
+                meeting_title=meeting_title,
+                meeting_language='en'
+            )
+
+            # Format sales data as plain text for CRM note
+            def format_sales_data_plain(data):
+                if not isinstance(data, dict):
+                    return str(data)
+
+                formatted = ""
+                field_names = {
+                    'tech_stack': 'Tech Stack',
+                    'pain_points': 'Pain Points',
+                    'impact': 'Business Impact',
+                    'next_steps': 'Next Steps',
+                    'roadblocks': 'Roadblocks'
+                }
+
+                for key, value in data.items():
+                    field_name = field_names.get(key, key.replace('_', ' ').title())
+                    formatted += f"{field_name}:\n{value}\n\n"
+
+                return formatted.strip()
+
+            crm_note_content = format_sales_data_plain(sales_data)
+
+            sys.stderr.write(f"✅ AI content generated successfully\n")
+            sys.stderr.flush()
+
+            # Convert HTML to plain text for modal display
+            def html_to_text(html_text):
+                import re
+                text = re.sub(r'<br\s*/?>', '\n', html_text)
+                text = re.sub(r'<p>', '\n', text)
+                text = re.sub(r'</p>', '\n', text)
+                text = re.sub(r'<li>', '\n• ', text)
+                text = re.sub(r'</li>', '', text)
+                text = re.sub(r'<ul>', '\n', text)
+                text = re.sub(r'</ul>', '\n', text)
+                text = re.sub(r'<b>(.*?)</b>', r'*\1*', text)
+                text = re.sub(r'<strong>(.*?)</strong>', r'*\1*', text)
+                text = re.sub(r'<i>(.*?)</i>', r'_\1_', text)
+                text = re.sub(r'<em>(.*?)</em>', r'_\1_', text)
+                text = re.sub(r'<[^>]+>', '', text)
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                return text.strip()
+
+            # Prepare private metadata for second modal
+            private_metadata = {
+                "recording_id": selected_recording_id,
+                "meeting_title": meeting_title,
+                "external_attendees": external_attendees_str,
+                "user_id": user_id,
+                "team_id": team_id
+            }
+
+            # Build second modal with editable content
+            second_modal = {
+                "type": "modal",
+                "callback_id": "followup_edit_modal",
+                "title": {"type": "plain_text", "text": "Edit Follow-up"},
+                "close": {"type": "plain_text", "text": "Close"},
+                "private_metadata": json.dumps(private_metadata),
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": meeting_title[:150]
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*External Attendees:* {external_attendees_str}"
+                        }
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "summary_block",
+                        "label": {"type": "plain_text", "text": "Meeting Summary"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "summary_input",
+                            "multiline": True,
+                            "initial_value": html_to_text(meeting_summary)[:3000],
+                            "placeholder": {"type": "plain_text", "text": "Edit meeting summary..."}
+                        },
+                        "optional": True
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "email_block",
+                        "label": {"type": "plain_text", "text": "Follow-up Email"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "email_input",
+                            "multiline": True,
+                            "initial_value": html_to_text(final_email)[:3000],
+                            "placeholder": {"type": "plain_text", "text": "Edit follow-up email..."}
+                        },
+                        "optional": True
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "crm_note_block",
+                        "label": {"type": "plain_text", "text": "CRM Note (Sales Insights)"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "crm_note_input",
+                            "multiline": True,
+                            "initial_value": crm_note_content[:3000],
+                            "placeholder": {"type": "plain_text", "text": "Edit CRM note..."}
+                        },
+                        "optional": True
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*Actions:* Click any button below to execute that action with the edited content above."
+                        }
+                    },
+                    {
+                        "type": "actions",
+                        "block_id": "modal_actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "action_id": "create_gmail_draft_from_modal",
+                                "text": {"type": "plain_text", "text": "📧 Gmail Draft"},
+                                "style": "primary"
+                            },
+                            {
+                                "type": "button",
+                                "action_id": "create_calendar_event_from_modal",
+                                "text": {"type": "plain_text", "text": "📅 Calendar Event"}
+                            },
+                            {
+                                "type": "button",
+                                "action_id": "push_note_to_crono_from_modal",
+                                "text": {"type": "plain_text", "text": "📝 Crono Note"}
+                            }
+                        ]
+                    },
+                    {
+                        "type": "actions",
+                        "block_id": "modal_actions_2",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "action_id": "view_crono_deals_from_modal",
+                                "text": {"type": "plain_text", "text": "👁️ View Deals"}
+                            },
+                            {
+                                "type": "button",
+                                "action_id": "create_crono_task_from_modal",
+                                "text": {"type": "plain_text", "text": "✅ Create Task"}
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            # Store data in conversation_state for modal handler
+            conversation_state[selected_recording_id] = {
+                'meeting_title': meeting_title,
+                'meeting_summary': html_to_text(meeting_summary),
+                'final_email': html_to_text(final_email),
+                'crm_note': crm_note_content,
+                'external_emails': external_emails,
+                'external_attendees_str': external_attendees_str,
+                'user_id': user_id,
+                'team_id': team_id,
+                'meeting_data': meeting_data,
+                'transcript': transcript
+            }
+
+            sys.stderr.write(f"✅ Content generated, updating message with 'View & Edit' button\n")
+            sys.stderr.flush()
+
+            # Step 3: Update the "Processing..." message with "Ready" + "View & Edit" button
+            slack_web_client.chat_update(
+                channel=channel_id,
+                ts=processing_ts,
+                text=f"✅ Follow-up ready for '{meeting_title}'",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"✅ *Follow-up ready for:*\n*{meeting_title}*"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"📊 Generated:\n• Meeting Summary\n• Follow-up Email\n• CRM Note\n\n_Click below to view and edit the content._"
+                        }
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "actions",
+                        "block_id": "followup_view_edit_actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "action_id": "open_followup_edit_modal",
+                                "text": {"type": "plain_text", "text": "📝 View & Edit"},
+                                "style": "primary",
+                                "value": selected_recording_id
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            sys.stderr.write(f"✅ Message updated with 'View & Edit' button\n")
+            sys.stderr.flush()
+
+        except Exception as e:
+            sys.stderr.write(f"❌ Error in process_and_update_message: {e}\n")
+            sys.stderr.flush()
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+            # Update message with error
+            try:
+                slack_web_client.chat_update(
+                    channel=channel_id,
+                    ts=processing_ts,
+                    text=f"❌ Error generating follow-up",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"❌ *Error generating follow-up*\n\n{str(e)}"
+                            }
+                        }
+                    ]
+                )
+            except:
+                pass
+
+    # Start background thread
+    thread = threading.Thread(target=process_and_update_message)
+    thread.start()
+
+    # Return immediate acknowledgment (closes first modal)
+    return jsonify({"response_action": "clear"})
 
 
 def handle_crono_task_submission(payload: dict):

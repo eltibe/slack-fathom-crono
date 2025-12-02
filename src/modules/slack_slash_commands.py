@@ -54,10 +54,32 @@ class SlackSlashCommandHandler:
                 day_label = "Yesterday"
 
             if not meetings:
-                slack_web_client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=user_id,
-                    text="📭 No meetings found today or yesterday."
+                # Open modal with "no meetings" message instead of ephemeral
+                slack_web_client.views_open(
+                    trigger_id=trigger_id,
+                    view={
+                        "type": "modal",
+                        "callback_id": "no_meetings_modal",
+                        "title": {"type": "plain_text", "text": "Meeting Follow-up"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "header",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "📭 No Meetings Found",
+                                    "emoji": True
+                                }
+                            },
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": "No meetings found for today or yesterday.\n\nTry recording a meeting with Fathom first!"
+                                }
+                            }
+                        ]
+                    }
                 )
                 return
 
@@ -77,7 +99,11 @@ class SlackSlashCommandHandler:
             )
 
         except Exception as e:
-            print(f"Error in handle_followup_command: {e}")
+            import sys
+            sys.stderr.write(f"❌ Error in handle_followup_command: {e}\n")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
             try:
                 slack_web_client.chat_postEphemeral(
                     channel=channel_id,
@@ -85,7 +111,8 @@ class SlackSlashCommandHandler:
                     text=f"❌ An error occurred: {e}"
                 )
             except Exception as slack_err:
-                print(f"Error sending error message to Slack: {slack_err}")
+                sys.stderr.write(f"❌ Error sending error message to Slack: {slack_err}\n")
+                sys.stderr.flush()
 
     def _get_meetings_by_date(self, target_date: date) -> List[Dict]:
         """
@@ -158,13 +185,14 @@ class SlackSlashCommandHandler:
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
         return self._get_meetings_by_date(yesterday)
 
-    def _build_meeting_selection_modal_blocks(self, meetings: List[Dict], day_label: str = "Today") -> List[Dict]:
+    def _build_meeting_selection_modal_blocks(self, meetings: List[Dict], day_label: str = "Today", show_load_more: bool = True) -> List[Dict]:
         """
         Build Slack modal blocks for meeting selection.
 
         Args:
             meetings: List of meeting dicts
             day_label: Label for the day ("Today" or "Yesterday")
+            show_load_more: Whether to show "Load Previous Meetings" button
 
         Returns:
             List of Slack Block Kit blocks for a modal
@@ -195,10 +223,10 @@ class SlackSlashCommandHandler:
                 time_str = start_dt.strftime('%H:%M')
             except:
                 time_str = "Unknown time"
-            
+
             duration = meeting.get('duration', 0)
             duration_str = f"({duration} min)" if duration else ""
-            
+
             option_text = f"{time_str} - {meeting['title']} {duration_str}"
 
             options.append({
@@ -227,6 +255,24 @@ class SlackSlashCommandHandler:
                     },
                     "options": options
                 }
+            })
+
+        # Add "Load Previous Meetings" button if this is today's view
+        if show_load_more and day_label == "Today":
+            blocks.append({
+                "type": "actions",
+                "block_id": "load_previous_meetings_block",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "⏮️ Load Previous Meetings"
+                        },
+                        "action_id": "load_previous_meetings",
+                        "style": "primary"
+                    }
+                ]
             })
 
         return blocks

@@ -9,7 +9,7 @@ import os
 import json
 import requests
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 from .base_provider import CRMProvider
