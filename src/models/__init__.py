@@ -21,6 +21,7 @@ from src.models.meeting_session import MeetingSession
 from src.models.account_mapping import AccountMapping
 from src.models.audit_log import AuditLog
 from src.models.api_rate_limit import APIRateLimit
+from src.models.user_settings import UserSettings
 
 # Export all models for convenience
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "AccountMapping",
     "AuditLog",
     "APIRateLimit",
+    "UserSettings",
 ]
 
 
@@ -99,6 +101,7 @@ def get_model_by_name(model_name: str):
         "AccountMapping": AccountMapping,
         "AuditLog": AuditLog,
         "APIRateLimit": APIRateLimit,
+        "UserSettings": UserSettings,
     }
     return models.get(model_name)
 
@@ -123,6 +126,7 @@ def list_all_models():
         AccountMapping,
         AuditLog,
         APIRateLimit,
+        UserSettings,
     ]
 
 

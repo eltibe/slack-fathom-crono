@@ -2,12 +2,16 @@
 """Test script to find InsightRevenue account in Crono"""
 import requests
 import os
+import pytest
 from dotenv import load_dotenv
 
 load_dotenv()
 
 api_key = os.getenv('CRONO_API_KEY')
 public_key = os.getenv('CRONO_PUBLIC_KEY')
+
+if not api_key or not public_key:
+    pytest.skip("CRONO_API_KEY/CRONO_PUBLIC_KEY non configurati", allow_module_level=True)
 
 headers = {
     "X-Api-Key": public_key,
@@ -85,8 +89,8 @@ for term in search_terms:
     if accounts:
         print(f"   ✅ Found {len(accounts)} account(s)")
         for acc in accounts:
-            name = acc.get('name', 'N/A')
-            website = acc.get('website', 'N/A')
+            name = acc.get('name') or 'N/A'
+            website = acc.get('website') or 'N/A'
             obj_id = acc.get('objectId', 'N/A')
 
             # Check if it matches insightrevenue
@@ -108,8 +112,8 @@ for term in search_terms:
     if accounts:
         print(f"   ✅ Found {len(accounts)} account(s)")
         for acc in accounts:
-            name = acc.get('name', 'N/A')
-            website = acc.get('website', 'N/A')
+            name = acc.get('name') or 'N/A'
+            website = acc.get('website') or 'N/A'
             obj_id = acc.get('objectId', 'N/A')
 
             # Check if it matches insightrevenue
@@ -146,7 +150,7 @@ try:
 
         for acc in accounts:
             website = acc.get('website', '') or ''
-            name = acc.get('name', 'N/A')
+            name = acc.get('name') or 'N/A'
             obj_id = acc.get('objectId', 'N/A')
 
             # Normalize website

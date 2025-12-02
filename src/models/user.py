@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Session
 
 from src.models.base import Base, BaseModel
+from src.models.user_settings import UserSettings # NEW
 
 
 class User(Base, BaseModel):
@@ -32,6 +33,7 @@ class User(Base, BaseModel):
     - created_crm_connections: One-to-many with CRMConnection (as creator)
     - created_account_mappings: One-to-many with AccountMapping (as creator)
     - audit_logs: One-to-many with AuditLog model
+    - settings: One-to-one with UserSettings model (NEW)
     """
 
     __tablename__ = "users"
@@ -145,6 +147,12 @@ class User(Base, BaseModel):
         "AuditLog",
         back_populates="user",
         lazy="select"
+    )
+
+    settings = relationship(
+        "UserSettings",
+        back_populates="user",
+        uselist=False
     )
 
     # Table constraints

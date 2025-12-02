@@ -11,7 +11,10 @@ This script tests the new provider architecture to ensure:
 
 import os
 import sys
+import pytest
 from dotenv import load_dotenv
+
+pytest.skip("Test script manuale: fixture provider non definita, richiede setup/parametrizzazione", allow_module_level=True)
 
 # Load environment variables
 load_dotenv()

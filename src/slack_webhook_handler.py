@@ -11,22 +11,30 @@ import json
 import hmac
 import hashlib
 import time
+import sys
+import ssl
 from typing import Dict, List, Optional
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 from slack_sdk.signature import SignatureVerifier
 from dotenv import load_dotenv
 
-from modules.slack_client import SlackClient
-from modules.slack_slash_commands import SlackSlashCommandHandler
-from modules.gmail_draft_creator import GmailDraftCreator
-from modules.calendar_event_creator import CalendarEventCreator
-from modules.fathom_client import FathomClient
-from modules.claude_email_generator import ClaudeEmailGenerator
-from modules.meeting_summary_generator import MeetingSummaryGenerator
-from modules.sales_summary_generator import SalesSummaryGenerator
-from modules.date_extractor import DateExtractor
-from providers.factory import CRMProviderFactory
+from src.modules.slack_client import SlackClient
+from src.modules.slack_slash_commands import SlackSlashCommandHandler
+from src.modules.gmail_draft_creator import GmailDraftCreator
+from src.modules.calendar_event_creator import CalendarEventCreator
+from src.modules.fathom_client import FathomClient
+from src.modules.claude_email_generator import ClaudeEmailGenerator
+from src.modules.meeting_summary_generator import MeetingSummaryGenerator
+from src.modules.sales_summary_generator import SalesSummaryGenerator
+from src.modules.date_extractor import DateExtractor
+from src.providers.factory import CRMProviderFactory
+from src.providers.crono_provider import CronoProvider
+from src.database import get_db
+from src.models import User
+from src.models.tenant import Tenant
 
 # Load environment variables
 load_dotenv()
@@ -34,9 +42,14 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 
+# Create SSL context that doesn't verify certificates (for local development)
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
+
 # Initialize Slack clients
 slack_client = SlackClient()
-slack_web_client = WebClient(token=os.getenv('SLACK_BOT_TOKEN'))
+slack_web_client = WebClient(token=os.getenv('SLACK_BOT_TOKEN'), ssl=ssl_context)
 slash_command_handler = SlackSlashCommandHandler()
 
 # Signature verifier for security
@@ -45,6 +58,74 @@ signature_verifier = SignatureVerifier(os.getenv('SLACK_SIGNING_SECRET'))
 # In-memory state storage (in production, use Redis or database)
 # Format: {thread_ts: {channel, selected_actions, meeting_data, awaiting_confirmation}}
 conversation_state = {}
+
+# Global cache for storing selected account IDs by view_id
+# Format: {view_id: account_id}
+selected_accounts_cache: Dict[str, str] = {}
+
+
+def get_user_crm_credentials(db, slack_user_id: str, team_id: str) -> Optional[Dict]:
+    """Get CRM credentials for a Slack user."""
+    try:
+        # First find the tenant by slack_team_id to get the UUID
+        tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+        if not tenant:
+            sys.stderr.write(f"Tenant not found for team_id: {team_id}\n")
+            return None
+
+        # Then find the user with the tenant UUID
+        user = db.query(User).filter(
+            User.slack_user_id == slack_user_id,
+            User.tenant_id == tenant.id
+        ).first()
+
+        if not user:
+            sys.stderr.write(f"User not found: slack_user_id={slack_user_id}, tenant_id={tenant.id}\n")
+            return None
+
+        if not user.settings:
+            sys.stderr.write(f"User settings not found for user_id={user.id}\n")
+            return None
+
+        return {
+            'api_url': 'https://ext.crono.one/api/v1',
+            'public_key': user.settings.crono_public_key,
+            'private_key': user.settings.crono_private_key
+        }
+    except Exception as e:
+        sys.stderr.write(f"Error getting CRM credentials: {e}\n")
+        return None
+
+
+def get_user_api_keys(db, slack_user_id: str, team_id: str) -> Optional[Dict]:
+    """Get all API keys for a Slack user."""
+    try:
+        # First find the tenant by slack_team_id to get the UUID
+        tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+        if not tenant:
+            return None
+
+        # Then find the user with the tenant UUID
+        user = db.query(User).filter(
+            User.slack_user_id == slack_user_id,
+            User.tenant_id == tenant.id
+        ).first()
+
+        if not user:
+            return None
+
+        if not user.settings:
+            return None
+
+        return {
+            'crono_api_key': user.settings.crono_api_key,
+            'crono_public_key': user.settings.crono_public_key,
+            'crono_private_key': user.settings.crono_private_key,
+            'fathom_api_key': user.settings.fathom_api_key
+        }
+    except Exception as e:
+        sys.stderr.write(f"Error getting API keys: {e}\n")
+        return None
 
 
 @app.route('/slack/events', methods=['POST'])
@@ -144,6 +225,102 @@ def slack_commands():
             "text": "⏳ Loading today's meetings..."
         })
 
+    elif command == '/crono-add-task':
+        sys.stderr.write(f"📥 Received command: {command} from user {user_id}\\n")
+        sys.stderr.flush()
+
+        try:
+            team_id = request.form.get('team_id')
+            trigger_id = request.form.get('trigger_id')
+
+            # Get today's date as initial date
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            # Open modal for task creation
+            slack_web_client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "crono_task_modal",
+                    "title": {"type": "plain_text", "text": "Create CRM Task"},
+                    "submit": {"type": "plain_text", "text": "Create"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "private_metadata": json.dumps({"channel_id": channel_id, "user_id": user_id, "team_id": team_id}),
+                    "blocks": [
+                        {
+                            "type": "input",
+                            "block_id": "crono_prospect_block",
+                            "label": {"type": "plain_text", "text": "Contact"},
+                            "element": {
+                                "type": "external_select",
+                                "action_id": "crono_prospect_select",
+                                "placeholder": {"type": "plain_text", "text": "Search for a contact..."},
+                                "min_query_length": 2
+                            }
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "crono_subject_block",
+                            "label": {"type": "plain_text", "text": "Subject"},
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "crono_task_subject",
+                                "placeholder": {"type": "plain_text", "text": "Call notes, meeting summary, etc."}
+                            }
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "crono_date_block",
+                            "label": {"type": "plain_text", "text": "Day"},
+                            "element": {
+                                "type": "datepicker",
+                                "action_id": "crono_task_date",
+                                "initial_date": today,
+                                "placeholder": {"type": "plain_text", "text": "Select day"}
+                            }
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "crono_type_block",
+                            "label": {"type": "plain_text", "text": "Task type"},
+                            "element": {
+                                "type": "static_select",
+                                "action_id": "crono_task_type",
+                                "initial_option": {
+                                    "text": {"type": "plain_text", "text": "Call"},
+                                    "value": "call"
+                                },
+                                "options": [
+                                    {"text": {"type": "plain_text", "text": "Email"}, "value": "email"},
+                                    {"text": {"type": "plain_text", "text": "Call"}, "value": "call"},
+                                    {"text": {"type": "plain_text", "text": "LinkedIn Message"}, "value": "linkedin"},
+                                    {"text": {"type": "plain_text", "text": "InMail"}, "value": "inmail"}
+                                ]
+                            }
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "crono_description_block",
+                            "optional": True,
+                            "label": {"type": "plain_text", "text": "Description (optional)"},
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "crono_task_description",
+                                "multiline": True,
+                                "placeholder": {"type": "plain_text", "text": "Call details"}
+                            }
+                        }
+                    ]
+                }
+            )
+            return '', 200
+        except SlackApiError as e:
+            sys.stderr.write(f"❌ Slack API error opening modal: {e.response}\\n")
+            return jsonify({
+                "response_type": "ephemeral",
+                "text": f"❌ Could not open modal: {e.response.get('error', 'Slack error')}"
+            })
+
     print(f"⚠️  Unknown command: {command}")
     return jsonify({
         'response_type': 'ephemeral',
@@ -187,6 +364,14 @@ def slack_interactions():
                 return handle_create_crono_note(payload)
             elif action_id == 'view_crono_deals':
                 return handle_view_crono_deals(payload)
+
+    elif interaction_type == 'block_suggestion':
+        return handle_block_suggestion(payload)
+
+    elif interaction_type == 'view_submission':
+        callback_id = payload.get('view', {}).get('callback_id')
+        if callback_id == 'crono_task_modal':
+            return handle_crono_task_submission(payload)
 
     return jsonify({'status': 'ok'})
 
@@ -1330,6 +1515,168 @@ def execute_selected_actions(thread_ts: str, state: Dict):
     # Clean up state
     if thread_ts in conversation_state:
         del conversation_state[thread_ts]
+
+
+def handle_block_suggestion(payload: dict):
+    """Handler for external select suggestions (e.g., prospect search)."""
+    action_id = payload.get('action_id')
+    user_id = payload.get('user', {}).get('id')
+    team_id = payload.get('team', {}).get('id')
+
+    if action_id == 'crono_prospect_select':
+        query = payload.get('value', '')
+        sys.stderr.write(f"🔍 [crono_prospect_select] query='{query}'\\n")
+        options: List[Dict] = []
+
+        try:
+            with get_db() as db:
+                credentials = get_user_crm_credentials(db, user_id, team_id)
+                if credentials:
+                    crm_provider = CronoProvider(credentials=credentials)
+                    prospects = crm_provider.search_prospects(query=query, account_id=None, limit=200)
+                    sys.stderr.write(f"  - 📞 Found {len(prospects)} prospects\\n")
+
+                    if len(prospects) == 0:
+                        options.append({
+                            "text": {"type": "plain_text", "text": "No contacts found. Try a different search."},
+                            "value": "no_prospects"
+                        })
+                    else:
+                        # Slack has a limit of ~100 options for external_select
+                        max_options = 100
+                        if len(prospects) > max_options:
+                            sys.stderr.write(f"  - Too many results ({len(prospects)}), limiting to {max_options}\\n")
+
+                        for i, p in enumerate(prospects):
+                            if i >= max_options:
+                                break
+
+                            # Display format: "Name (Account) - email"
+                            display_name = p.get('name', 'No Name')
+                            account_name = p.get('accountName', '')
+                            if account_name and account_name != 'Unknown Account':
+                                display_name += f" ({account_name})"
+                            if p.get('email'):
+                                display_name += f" - {p.get('email')}"
+
+                            # Use compact format: prospect_id|account_id (max 75 chars)
+                            value_str = f"{p.get('id', '')}|{p.get('accountId', '')}"
+                            options.append({
+                                "text": {"type": "plain_text", "text": display_name[:75]},
+                                "value": value_str[:75]  # Slack limit
+                            })
+
+                        sys.stderr.write(f"  - Returning {len(options)} options\\n")
+                        sys.stderr.write(f"  - Response JSON (first 500 chars): {json.dumps({'options': options}, ensure_ascii=False)[:500]}\\n")
+        except Exception as e:
+            sys.stderr.write(f"🔥🔥🔥 EXCEPTION in crono_prospect_select: {e}\\n")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+        sys.stderr.flush()
+        return jsonify({"options": options})
+
+    return jsonify({"options": []})
+
+
+def handle_crono_task_submission(payload: dict):
+    """Handle submission of Crono task creation modal."""
+    view = payload.get('view', {})
+    user = payload.get('user', {})
+    user_id = user.get('id')
+
+    # Extract values from modal
+    state = view.get('state', {}).get('values', {})
+
+    # Get prospect (format: prospect_id|account_id)
+    prospect_state = state.get('crono_prospect_block', {}).get('crono_prospect_select', {})
+    selected_option = prospect_state.get('selected_option', {})
+    prospect_value = selected_option.get('value', '')
+
+    # Parse prospect_id and account_id
+    if '|' in prospect_value:
+        prospect_id, account_id = prospect_value.split('|', 1)
+    else:
+        return jsonify({
+            "response_action": "errors",
+            "errors": {
+                "crono_prospect_block": "Please select a contact"
+            }
+        })
+
+    # Get other fields
+    subject_state = state.get('crono_subject_block', {}).get('crono_task_subject', {})
+    subject = subject_state.get('value', 'Task')
+
+    date_state = state.get('crono_date_block', {}).get('crono_task_date', {})
+    selected_date = date_state.get('selected_date')  # Format: YYYY-MM-DD
+
+    type_state = state.get('crono_type_block', {}).get('crono_task_type', {})
+    selected_option_type = type_state.get('selected_option', {})
+    selected_type = selected_option_type.get('value', 'call')
+
+    description_state = state.get('crono_description_block', {}).get('crono_task_description', {})
+    description = description_state.get('value', '')
+
+    # Convert date to datetime (set time to 9 AM)
+    if selected_date:
+        due_date = datetime.strptime(selected_date, "%Y-%m-%d").replace(hour=9, minute=0, second=0)
+    else:
+        due_date = datetime.now().replace(hour=9, minute=0, second=0)
+
+    try:
+        private_meta = view.get('private_metadata') or '{}'
+        metadata = json.loads(private_meta)
+        team_id = metadata.get('team_id')
+
+        with get_db() as db:
+            credentials = get_user_crm_credentials(db, user_id, team_id)
+            if not credentials:
+                return jsonify({
+                    "response_action": "errors",
+                    "errors": {
+                        "crono_prospect_block": "CRM credentials not found"
+                    }
+                })
+
+            crm_provider = CronoProvider(credentials=credentials)
+
+            # Get account name for notification
+            account_name = selected_option.get('text', {}).get('text', 'Unknown')
+
+            # Create task in Crono
+            result = crm_provider.create_task(
+                account_id=account_id,
+                subject=subject,
+                description=description,
+                due_date=due_date,
+                task_type=selected_type,
+                prospect_id=prospect_id
+            )
+            private_meta = view.get('private_metadata') or '{}'
+            channel_id = json.loads(private_meta).get("channel_id")
+
+            # Try to send confirmation message (non-blocking)
+            if channel_id and user_id:
+                try:
+                    slack_web_client.chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=f"✅ Task '{subject}' created for {account_name}."
+                    )
+                except Exception as notify_error:
+                    # Log but don't fail - task was already created successfully
+                    sys.stderr.write(f"⚠️  Could not send confirmation message: {notify_error}\n")
+
+            return jsonify({"response_action": "clear"})
+    except Exception as e:
+        sys.stderr.write(f"🔥🔥🔥 Error in task creation view_submission: {e}\\n")
+        return jsonify({
+            "response_action": "errors",
+            "errors": {
+                "crono_prospect_block": f"Error: {str(e)}"
+            }
+        })
 
 
 def start_webhook_server(port: int = 3000, debug: bool = False):

@@ -13,6 +13,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from .base_provider import CRMProvider
+from ..exceptions import CRMIntegrationError
 
 
 class CronoProvider(CRMProvider):
@@ -39,8 +40,8 @@ class CronoProvider(CRMProvider):
             raise ValueError("Crono provider requires 'public_key' and 'private_key' credentials")
 
         self.headers = {
-            "X-Api-Key": self.public_key,
-            "X-Api-Secret": self.private_key,
+            "x-api-key": self.public_key,
+            "x-api-secret": self.private_key,
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
@@ -50,6 +51,127 @@ class CronoProvider(CRMProvider):
         self.account_mappings_file = os.path.join(
             os.path.dirname(__file__), '..', '..', 'configs', 'account_mappings.json'
         )
+
+    def search_prospects(self, query: str = "", account_id: Optional[str] = None, limit: int = 10) -> List[Dict]:
+        """Search for prospects/contacts in Crono.
+
+        Args:
+            query: Search query (contact name)
+            account_id: Filter by account ID
+            limit: Max results (target, not API limit)
+
+        Returns:
+            List of standardized prospect dicts
+        """
+        try:
+            # Use POST /api/v1/Prospects/search for proper filtering
+            api_url = "https://ext.crono.one/api/v1"
+
+            # Crono API has a max limit of 50 per request
+            # We'll paginate to get more results
+            api_limit = 50
+            max_pages = 10  # Max 500 prospects total
+            all_prospects = []
+
+            for page in range(max_pages):
+                payload = {
+                    "pagination": {
+                        "limit": api_limit,
+                        "offset": page * api_limit
+                    }
+                }
+
+                # Add name filter if specified (server-side search)
+                if query:
+                    payload["name"] = query
+
+                # Add accountId filter if specified
+                if account_id:
+                    payload["accountId"] = account_id
+
+                import sys
+                sys.stderr.write(f"  [API REQUEST] POST {api_url}/Prospects/search\n")
+                sys.stderr.write(f"  [API PAYLOAD] {json.dumps(payload, indent=2)}\n")
+                sys.stderr.write(f"  [API HEADERS] {json.dumps({k: v for k, v in self.headers.items() if k != 'X-API-SECRET'}, indent=2)}\n")
+
+                response = requests.post(
+                    f"{api_url}/Prospects/search",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=10
+                )
+
+                sys.stderr.write(f"  [API RESPONSE] Status: {response.status_code}\n")
+                if response.status_code != 200:
+                    sys.stderr.write(f"  [API ERROR] {response.text[:500]}\n")
+                    break
+
+                data = response.json()
+                prospects = data.get('data', [])
+                if not prospects:
+                    break  # No more results
+
+                all_prospects.extend(prospects)
+
+                # If we have enough results after filtering, we can stop early
+                if len(all_prospects) >= limit * 10:  # Get 10x more than needed for filtering
+                    break
+
+            prospects = all_prospects
+
+            import sys
+            sys.stderr.write(f"  [search_prospects] Retrieved {len(prospects)} prospects from API (across {len(all_prospects)//api_limit + 1} pages)\\n")
+
+            # Get account names BEFORE filtering by query
+            account_ids = list(set([p.get('accountId') for p in prospects if p.get('accountId')]))
+            account_names = {}
+            sys.stderr.write(f"  [search_prospects] Found {len(account_ids)} unique account IDs\\n")
+
+            # Fetch account names in batch
+            if account_ids:
+                for acc_id in account_ids[:20]:  # Limit to avoid too many requests
+                    try:
+                        acc_resp = requests.get(
+                            f"{api_url}/Accounts/{acc_id}",
+                            headers=self.headers,
+                            timeout=5
+                        )
+                        if acc_resp.status_code == 200:
+                            response_data = acc_resp.json()
+                            # Crono API wraps response in {data: {...}, isSuccess: true, errors: []}
+                            acc_data = response_data.get('data', {})
+                            acc_name = acc_data.get('name', 'Unknown Account')
+                            account_names[acc_id] = acc_name
+                    except Exception as e:
+                        pass  # Silently skip failed account lookups
+
+            # Add account names to prospects
+            for p in prospects:
+                p['accountName'] = account_names.get(p.get('accountId'), 'Unknown Account')
+
+            # Filter by query client-side if specified (include account name in search)
+            before_filter = len(prospects)
+            if query:
+                query_lower = query.strip().lower()  # Strip whitespace to avoid false negatives
+                prospects = [
+                    p for p in prospects
+                    if query_lower in (p.get('name') or '').lower() or
+                       query_lower in (p.get('email') or '').lower() or
+                       query_lower in (p.get('accountName') or '').lower()
+                ]
+                sys.stderr.write(f"  [search_prospects] Filtered from {before_filter} to {len(prospects)} prospects (query='{query}')\\n")
+
+            return [{
+                'id': p.get('objectId'),
+                'name': p.get('name', 'No Name'),
+                'email': p.get('email'),
+                'accountId': p.get('accountId'),
+                'accountName': p.get('accountName', 'Unknown Account')
+            } for p in prospects]
+
+        except Exception as e:
+            print(f"Error searching Crono prospects: {e}")
+            return []
 
     def search_accounts(self, query: str, limit: int = 10) -> List[Dict]:
         """Search for accounts/companies in Crono.
@@ -61,6 +183,30 @@ class CronoProvider(CRMProvider):
         Returns:
             List of standardized account dicts
         """
+        results: List[Dict] = []
+        seen_ids = set()
+
+        # Try POST /api/v1/Accounts/search for better name search when query provided
+        if query:
+            try:
+                post_url = "https://ext.crono.one/api/v1/Accounts/search"
+                payload = {"name": query}
+                resp = requests.post(post_url, headers=self.headers, json=payload, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    accounts = data.get('data', [])
+                    for acc in accounts:
+                        std = self._standardize_account(acc)
+                        acc_id = std.get('id')
+                        if acc_id and acc_id not in seen_ids:
+                            seen_ids.add(acc_id)
+                            results.append(std)
+                else:
+                    print(f"Crono POST search status {resp.status_code}: {resp.text[:200]}")
+            except Exception as e:
+                print(f"Error in Crono POST search: {e}")
+
+        # Fallback/augment with GET search (supports empty query to list recent)
         try:
             params = {'limit': limit}
             if query:
@@ -75,21 +221,24 @@ class CronoProvider(CRMProvider):
 
             if response.status_code == 200:
                 data = response.json()
-                # Response might be direct array or object with data field
                 if isinstance(data, list):
                     accounts = data
                 else:
                     accounts = data.get('data', data.get('accounts', []))
 
-                # Standardize account format
-                return [self._standardize_account(acc) for acc in accounts]
+                for acc in accounts:
+                    std = self._standardize_account(acc)
+                    acc_id = std.get('id')
+                    if acc_id and acc_id not in seen_ids:
+                        seen_ids.add(acc_id)
+                        results.append(std)
             else:
                 print(f"Crono API returned status {response.status_code}: {response.text[:200]}")
-                return []
 
         except Exception as e:
             print(f"Error searching Crono accounts: {e}")
-            return []
+
+        return results
 
     def get_account_by_id(self, account_id: str) -> Optional[Dict]:
         """Get account details by ID.
@@ -233,56 +382,128 @@ class CronoProvider(CRMProvider):
             print(f"Error fetching Crono deals: {e}")
             return []
 
-    def create_task(self, account_id: str, task_data: Dict) -> Dict:
-        """Create a task on a Crono account.
+    def create_task(self, account_id: str, subject: str, description: Optional[str] = None, due_date: Optional[datetime] = None, task_type: str = "call", prospect_id: Optional[str] = None) -> Dict:
+        """
+        Creates a task in Crono for a specific account.
+
+        Note: Tasks endpoint uses /api/v1 base URL, not /v1
 
         Args:
-            account_id: Crono account objectId
-            task_data: Task details dict
-
-        Returns:
-            Created task dict
-
-        Raises:
-            NotImplementedError: Crono task API not available yet
+            account_id: Crono account ID
+            subject: Task title/subject
+            description: Task description
+            due_date: Due date (defaults to 7 days from now)
+            task_type: Type of task - "call", "email", or "todo"
+            prospect_id: Optional prospect/contact ID
         """
-        # TODO: Implement when Crono task creation API becomes available
-        # Expected endpoint: POST /v1/Tasks
-        # Expected payload format:
-        # {
-        #     "data": {
-        #         "title": task_data['title'],
-        #         "description": task_data['description'],
-        #         "dueDate": task_data['due_date'],
-        #         "accountId": account_id,
-        #         "assignedTo": task_data.get('assigned_to')
-        #     }
-        # }
-        raise NotImplementedError("Crono task creation API not available yet")
+        # Default due date to 7 days from now if not provided
+        if not due_date:
+            due_date = datetime.now() + timedelta(days=7)
+
+        # Map task type string to Crono integer enum
+        # CronoTaskTodoType is an integer enum
+        type_mapping = {
+            "email": 0,            # Email
+            "call": 1,             # Phone call
+            "linkedin": 2,         # LinkedIn message
+            "inmail": 3            # InMail message
+        }
+        type_value = type_mapping.get(task_type.lower(), 1)  # Default to call (1)
+
+        # Format date as RFC 3339 (section 5.6) with Z suffix for UTC
+        # Example: 2017-07-21T17:32:28Z
+        activity_date_str = due_date.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
+        # Crono API expects payload wrapped in "data" object
+        payload = {
+            "data": {
+                "accountId": account_id,
+                "prospectId": prospect_id or "",  # Empty string if no contact
+                "opportunityId": None,
+                "type": type_value,  # INTEGER enum (1=call, 2=email, 3=todo)
+                "subtype": None,
+                "activityDate": activity_date_str,  # RFC 3339 format with Z
+                "templateId": None,
+                "automatic": False,  # Manual task creation
+                "subject": subject,
+                "description": description or ""
+            }
+        }
+
+        try:
+            # Tasks endpoint uses /api/v1, not /v1
+            api_url = "https://ext.crono.one/api/v1"
+
+            # Log payload for debugging
+            import sys
+            sys.stderr.write(f"🔧 Creating task with payload: {json.dumps(payload, indent=2)}\n")
+
+            response = requests.post(
+                f"{api_url}/Tasks",
+                headers=self.headers,
+                json=payload,
+                timeout=10
+            )
+
+            # Log the full response for debugging
+            sys.stderr.write(f"📥 Response status: {response.status_code}\n")
+            sys.stderr.write(f"📥 Response body: {response.text[:1000]}\n")
+            sys.stderr.flush()
+
+            if response.status_code in [200, 201]:
+                result = response.json()
+                if result.get('isSuccess'):
+                    print(f"✅ Task created successfully in Crono for account {account_id}")
+                    return result.get('data', {})
+                else:
+                    errors = result.get('errors', [])
+                    print(f"❌ Crono API returned isSuccess=false: {errors}")
+                    raise Exception(f"Crono task creation failed: {errors}")
+            else:
+                print(f"❌ Crono API returned status {response.status_code}: {response.text[:500]}")
+                raise Exception(f"Crono API error {response.status_code}: {response.text[:200]}")
+
+        except Exception as e:
+            raise CRMIntegrationError(f"Failed to create task in Crono for account {account_id}: {e}")
 
     def update_deal_stage(self, deal_id: str, stage: str) -> Dict:
-        """Update deal/opportunity stage in Crono.
-
-        Args:
-            deal_id: Crono opportunity objectId
-            stage: New standardized stage name
-
-        Returns:
-            Updated deal dict
-
-        Raises:
-            NotImplementedError: Crono stage update API not available yet
         """
-        # TODO: Implement when Crono opportunity update API becomes available
-        # Expected endpoint: PUT /v1/Opportunities/{deal_id}
-        # Will need to map standardized stage to Crono-specific stage using get_stage_mapping()
-        # Expected payload format:
-        # {
-        #     "data": {
-        #         "stage": self.get_stage_mapping()[stage]
-        #     }
-        # }
-        raise NotImplementedError("Crono stage update API not available yet")
+        Update deal/opportunity stage in Crono.
+        """
+        # Map the stage to Crono-specific stage name
+        crono_stage = self.get_stage_mapping().get(stage.lower())
+        if not crono_stage:
+            raise ValueError(f"Unknown deal stage: {stage}. Supported stages: {list(self.get_stage_mapping().keys())}")
+
+        payload = {
+            "data": {
+                "stage": crono_stage
+            }
+        }
+
+        try:
+            response = requests.put(
+                f"{self.base_url}/Opportunities/{deal_id}",
+                headers=self.headers,
+                json=payload,
+                timeout=10
+            )
+
+            if response.status_code in [200, 201]:
+                result = response.json()
+                if result.get('isSuccess'):
+                    print(f"✅ Deal {deal_id} updated to stage {stage}")
+                    return result.get('data', {})
+                else:
+                    errors = result.get('errors', [])
+                    print(f"❌ Crono API returned isSuccess=false: {errors}")
+                    raise Exception(f"Crono deal update failed: {errors}")
+            else:
+                print(f"❌ Crono API returned status {response.status_code}: {response.text[:200]}")
+                raise Exception(f"Crono API error: {response.status_code}")
+
+        except Exception as e:
+            raise CRMIntegrationError(f"Failed to update deal {deal_id} to stage {stage}: {e}")
 
     def get_stage_mapping(self) -> Dict[str, str]:
         """Get mapping from standard stages to Crono-specific stage names.

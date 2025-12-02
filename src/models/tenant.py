@@ -15,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship, Session
 
 from src.models.base import Base, BaseModel
+from src.models.user_settings import UserSettings # NEW
 
 
 class Tenant(Base, BaseModel):
@@ -33,6 +34,7 @@ class Tenant(Base, BaseModel):
     - meeting_sessions: One-to-many with MeetingSession model
     - account_mappings: One-to-many with AccountMapping model
     - api_rate_limits: One-to-many with APIRateLimit model
+    - user_settings: One-to-many with UserSettings model (NEW)
     """
 
     __tablename__ = "tenants"
@@ -165,6 +167,13 @@ class Tenant(Base, BaseModel):
     audit_logs = relationship(
         "AuditLog",
         back_populates="tenant",
+        lazy="select"
+    )
+
+    user_settings = relationship(
+        "UserSettings",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
         lazy="select"
     )
 

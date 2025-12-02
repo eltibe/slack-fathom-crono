@@ -1,86 +1,160 @@
 """
 Database configuration and session management for SQLAlchemy 2.0.
 
-This module provides:
-- Database engine configuration with connection pooling
-- Session factory and context manager
-- Database initialization utilities
-- Support for both sync and async operations (currently sync only)
+This refactored module uses a DatabaseManager class to encapsulate all
+database connection logic, ensuring a single, managed point of entry.
 """
 
 import os
+import sys
 from contextlib import contextmanager
 from typing import Generator, Optional
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, event, Engine
-from sqlalchemy.engine import URL
+from sqlalchemy import create_engine, event, Engine, text
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 from sqlalchemy.pool import QueuePool
+from sqlalchemy.exc import OperationalError
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
 
-# Database configuration from environment variables
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://user:password@localhost:5432/slack_fathom_crono"
-)
-DATABASE_POOL_SIZE = int(os.getenv("DATABASE_POOL_SIZE", "20"))
-DATABASE_MAX_OVERFLOW = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
-DATABASE_POOL_TIMEOUT = int(os.getenv("DATABASE_POOL_TIMEOUT", "30"))
-DATABASE_POOL_RECYCLE = int(os.getenv("DATABASE_POOL_RECYCLE", "3600"))
-DATABASE_ECHO = os.getenv("DATABASE_ECHO", "false").lower() == "true"
+class DatabaseManager:
+    """A centralized manager for database connections and sessions."""
+
+    def __init__(self):
+        self.engine: Optional[Engine] = None
+        self.SessionFactory: Optional[sessionmaker[Session]] = None
+        self._load_config()
+
+    def _load_config(self):
+        """Load database configuration from environment variables."""
+        self.db_url = os.getenv("DATABASE_URL")
+        self.pool_size = int(os.getenv("DATABASE_POOL_SIZE", "20"))
+        self.max_overflow = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
+        self.pool_timeout = int(os.getenv("DATABASE_POOL_TIMEOUT", "30"))
+        self.pool_recycle = int(os.getenv("DATABASE_POOL_RECYCLE", "3600"))
+        self.echo = os.getenv("DATABASE_ECHO", "false").lower() == "true"
+
+    def connect(self):
+        """Create the database engine and session factory."""
+        # Reload config in case environment vars changed after import
+        self._load_config()
+        if not self.db_url:
+            raise ValueError("DATABASE_URL is not set. Please configure it in your environment.")
+
+        try:
+            self.engine = create_engine(
+                self.db_url,
+                poolclass=QueuePool,
+                pool_size=self.pool_size,
+                max_overflow=self.max_overflow,
+                pool_timeout=self.pool_timeout,
+                pool_recycle=self.pool_recycle,
+                pool_pre_ping=True,
+                echo=self.echo,
+                future=True,
+            )
+
+            self.SessionFactory = sessionmaker(
+                bind=self.engine,
+                autocommit=False,
+                autoflush=False,
+                expire_on_commit=False,
+                future=True,
+            )
+            self._register_event_listeners()
+            print("✓ Database engine created successfully.")
+        except Exception as e:
+            print(f"❌ Failed to create database engine: {e}", file=sys.stderr)
+            raise
+
+    def check_connection(self) -> bool:
+        """
+        Verify that a connection can be established to the database.
+        Returns True on success, raises an exception on failure.
+        """
+        if not self.engine:
+            print("❌ Database engine not initialized. Call connect() first.", file=sys.stderr)
+            return False
+        
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print("✓ Database connection verified successfully.")
+            return True
+        except OperationalError as e:
+            print(f"❌ Database connection failed: An OperationalError occurred.", file=sys.stderr)
+            print(f"  Error: {e}", file=sys.stderr)
+            print(f"  Is the database running and accessible at the configured URL?", file=sys.stderr)
+            print(f"  URL: {str(self.engine.url).replace(self.engine.url.password or '', '***')}", file=sys.stderr)
+            raise
+        except Exception as e:
+            print(f"❌ An unexpected error occurred during database connection check: {e}", file=sys.stderr)
+            raise
+
+    def get_session(self) -> Session:
+        """Get a new database session."""
+        if not self.SessionFactory:
+            raise RuntimeError("SessionFactory not initialized. Call connect() first.")
+        return self.SessionFactory()
+        
+    def get_database_info(self) -> dict:
+        """Get database connection information (for debugging)."""
+        if not self.engine:
+            return {"error": "Engine not initialized."}
+        return {
+            "url": str(self.engine.url).replace(self.engine.url.password or "", "***"),
+            "pool_size": self.pool_size,
+            "max_overflow": self.max_overflow,
+            "pool_timeout": self.pool_timeout,
+            "pool_recycle": self.pool_recycle,
+            "echo": self.echo,
+        }
+
+    def _register_event_listeners(self):
+        """Register SQLAlchemy event listeners."""
+        if not self.engine:
+            return
+
+        @event.listens_for(self.engine, "connect")
+        def set_statement_timeout(dbapi_conn, connection_record):
+            """Set statement timeout for new connections to prevent long-running queries."""
+            if "postgresql" in self.db_url:
+                cursor = dbapi_conn.cursor()
+                try:
+                    cursor.execute("SET statement_timeout = '30s'")
+                finally:
+                    cursor.close()
+
+# --- Global Database Manager Instance ---
+db_manager = DatabaseManager()
+# Attempt connection at import time if DATABASE_URL is set (dev convenience)
+try:
+    if db_manager.db_url:
+        db_manager.connect()
+except Exception as e:
+    # In dev, log and continue; callers can handle connection separately
+    sys.stderr.write(f"Warning: automatic DB connect failed: {e}\n")
+    sys.stderr.flush()
+
+# Expose engine for legacy imports
+engine = db_manager.engine
 
 
-# SQLAlchemy 2.0 declarative base
+# --- SQLAlchemy Base and Session Context ---
+
 class Base(DeclarativeBase):
     """Base class for all database models."""
     pass
 
-
-# Database engine with connection pooling
-engine = create_engine(
-    DATABASE_URL,
-    poolclass=QueuePool,
-    pool_size=DATABASE_POOL_SIZE,
-    max_overflow=DATABASE_MAX_OVERFLOW,
-    pool_timeout=DATABASE_POOL_TIMEOUT,
-    pool_recycle=DATABASE_POOL_RECYCLE,
-    pool_pre_ping=True,  # Enable connection health checks
-    echo=DATABASE_ECHO,   # Log SQL statements (dev only)
-    future=True,          # Use SQLAlchemy 2.0 style
-)
-
-
-# Session factory
-SessionFactory = sessionmaker(
-    bind=engine,
-    autocommit=False,
-    autoflush=False,
-    expire_on_commit=False,
-    future=True,
-)
-
-
 @contextmanager
 def get_db() -> Generator[Session, None, None]:
     """
-    Context manager for database sessions.
-
-    Usage:
-        with get_db() as db:
-            user = db.query(User).filter_by(id=user_id).first()
-            db.commit()
-
-    Yields:
-        Session: SQLAlchemy database session
-
-    Raises:
-        Exception: Any database error (rolled back automatically)
+    Context manager for providing a transactional database session.
     """
-    session = SessionFactory()
+    session = db_manager.get_session()
     try:
         yield session
         session.commit()
@@ -91,95 +165,40 @@ def get_db() -> Generator[Session, None, None]:
         session.close()
 
 
-def get_session() -> Session:
-    """
-    Create and return a new database session.
-
-    NOTE: Caller is responsible for closing the session.
-    Consider using get_db() context manager instead.
-
-    Returns:
-        Session: SQLAlchemy database session
-    """
-    return SessionFactory()
-
+# --- Database Initialization Utilities (for dev/test) ---
 
 def init_db() -> None:
     """
     Initialize database by creating all tables.
-
-    WARNING: This should only be used for testing/development.
-    Use Alembic migrations for production.
+    WARNING: Use Alembic migrations for production.
     """
+    if not db_manager.engine:
+        raise RuntimeError("Database not connected. Call db_manager.connect() before initializing.")
     from src.models import Base as ModelsBase
-    ModelsBase.metadata.create_all(bind=engine)
+    ModelsBase.metadata.create_all(bind=db_manager.engine)
     print("✓ Database tables created successfully")
 
 
 def drop_all_tables() -> None:
     """
     Drop all database tables.
-
-    WARNING: This is destructive and should only be used in testing.
+    WARNING: This is destructive and for testing only.
     """
+    if not db_manager.engine:
+        raise RuntimeError("Database not connected.")
     from src.models import Base as ModelsBase
-    ModelsBase.metadata.drop_all(bind=engine)
+    ModelsBase.metadata.drop_all(bind=db_manager.engine)
     print("✓ All database tables dropped")
 
-
-def check_connection() -> bool:
-    """
-    Check if database connection is working.
-
-    Returns:
-        bool: True if connection successful, False otherwise
-    """
-    try:
-        with engine.connect() as conn:
-            conn.execute("SELECT 1")
-        return True
-    except Exception as e:
-        print(f"✗ Database connection failed: {e}")
-        return False
-
-
-def get_database_info() -> dict:
-    """
-    Get database connection information (for debugging).
-
-    Returns:
-        dict: Database configuration details
-    """
-    return {
-        "url": str(engine.url).replace(engine.url.password or "", "***"),
-        "pool_size": DATABASE_POOL_SIZE,
-        "max_overflow": DATABASE_MAX_OVERFLOW,
-        "pool_timeout": DATABASE_POOL_TIMEOUT,
-        "pool_recycle": DATABASE_POOL_RECYCLE,
-        "echo": DATABASE_ECHO,
-    }
-
-
-# Enable statement timeout for all connections (30 seconds)
-@event.listens_for(Engine, "connect")
-def set_sqlite_pragma(dbapi_conn, connection_record):
-    """Set connection-level parameters on new connections."""
-    # For PostgreSQL: set statement timeout
-    if "postgresql" in DATABASE_URL:
-        cursor = dbapi_conn.cursor()
-        cursor.execute("SET statement_timeout = '30s'")
-        cursor.close()
-
-
+# Example of direct execution for testing the connection
 if __name__ == "__main__":
-    """Test database connection."""
-    print("Database Configuration:")
-    print("-" * 60)
-    for key, value in get_database_info().items():
-        print(f"  {key}: {value}")
-    print("-" * 60)
-
-    if check_connection():
-        print("✓ Database connection successful!")
-    else:
-        print("✗ Database connection failed!")
+    print("--- Testing DatabaseManager ---")
+    try:
+        db_manager.connect()
+        db_manager.check_connection()
+        print("\nDatabase Info:")
+        for key, value in db_manager.get_database_info().items():
+            print(f"  {key}: {value}")
+    except Exception as e:
+        print(f"\n--- Test Failed: {e} ---", file=sys.stderr)
+        sys.exit(1)

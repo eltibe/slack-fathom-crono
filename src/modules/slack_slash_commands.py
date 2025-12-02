@@ -6,12 +6,13 @@ Handles /followup command to show today's meetings and process selected one.
 """
 
 import os
+import json
 from typing import Dict, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-from modules.fathom_client import FathomClient
+from src.modules.fathom_client import FathomClient
 
 
 class SlackSlashCommandHandler:
@@ -33,59 +34,57 @@ class SlackSlashCommandHandler:
         self.client = WebClient(token=self.bot_token)
         self.fathom = FathomClient()
 
-    def handle_followup_command(self, user_id: str, channel_id: str, response_url: str) -> Dict:
+    def handle_followup_command(self, user_id: str, channel_id: str, trigger_id: str, slack_web_client: WebClient):
         """
-        Handle /followup slash command.
-        Shows list of today's meetings for user to select.
-        If no meetings today, shows yesterday's meetings instead.
+        Handle /followup slash command by opening a modal to select a meeting.
 
         Args:
-            user_id: Slack user ID who invoked the command
-            channel_id: Channel where command was invoked
-            response_url: URL to send delayed response
-
-        Returns:
-            Dict with immediate response
+            user_id: The ID of the user invoking the command.
+            channel_id: Channel where command was invoked.
+            trigger_id: Trigger ID for opening a modal.
+            slack_web_client: The Slack WebClient to interact with the API.
         """
         try:
-            # Get today's meetings from Fathom
             meetings = self._get_todays_meetings()
             day_label = "Today"
 
-            # If no meetings today, try yesterday
             if not meetings:
                 meetings = self._get_yesterdays_meetings()
                 day_label = "Yesterday"
 
             if not meetings:
-                return {
-                    "response_type": "ephemeral",
-                    "text": "📭 No meetings found.",
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": "📭 *No meetings found today or yesterday.*\n\nNo Fathom recordings found for the last 2 days. Make sure you have recorded meetings in Fathom."
-                            }
-                        }
-                    ]
+                slack_web_client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text="📭 No meetings found today or yesterday."
+                )
+                return
+
+            blocks = self._build_meeting_selection_modal_blocks(meetings, day_label=day_label)
+            
+            slack_web_client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "followup_meeting_select_modal",
+                    "title": {"type": "plain_text", "text": "Meeting Follow-up"},
+                    "submit": {"type": "plain_text", "text": "Next"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": blocks,
+                    "private_metadata": json.dumps({"channel_id": channel_id})
                 }
-
-            # Build interactive message with meeting list
-            blocks = self._build_meeting_selection_blocks(meetings, day_label=day_label)
-
-            return {
-                "response_type": "ephemeral",  # Only visible to you
-                "text": f"Found {len(meetings)} meeting(s) from {day_label.lower()}",
-                "blocks": blocks
-            }
+            )
 
         except Exception as e:
-            return {
-                "response_type": "ephemeral",
-                "text": f"❌ Error: {str(e)}"
-            }
+            print(f"Error in handle_followup_command: {e}")
+            try:
+                slack_web_client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=f"❌ An error occurred: {e}"
+                )
+            except Exception as slack_err:
+                print(f"Error sending error message to Slack: {slack_err}")
 
     def _get_meetings_by_date(self, target_date: date) -> List[Dict]:
         """
@@ -158,16 +157,16 @@ class SlackSlashCommandHandler:
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
         return self._get_meetings_by_date(yesterday)
 
-    def _build_meeting_selection_blocks(self, meetings: List[Dict], day_label: str = "Today") -> List[Dict]:
+    def _build_meeting_selection_modal_blocks(self, meetings: List[Dict], day_label: str = "Today") -> List[Dict]:
         """
-        Build Slack blocks for meeting selection.
+        Build Slack modal blocks for meeting selection.
 
         Args:
             meetings: List of meeting dicts
             day_label: Label for the day ("Today" or "Yesterday")
 
         Returns:
-            List of Slack Block Kit blocks
+            List of Slack Block Kit blocks for a modal
         """
         blocks = [
             {
@@ -182,75 +181,52 @@ class SlackSlashCommandHandler:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "Select a meeting to generate follow-up email and notes:"
+                    "text": "Select a meeting to generate a follow-up."
                 }
-            },
-            {
-                "type": "divider"
             }
         ]
 
-        # Add radio buttons for each meeting
+        # Create options for the static select menu
         options = []
-        for i, meeting in enumerate(meetings):
-            # Format start time
+        for meeting in meetings:
             try:
                 start_dt = datetime.fromisoformat(meeting['start_time'].replace('Z', '+00:00'))
                 time_str = start_dt.strftime('%H:%M')
             except:
                 time_str = "Unknown time"
-
-            # Format duration
+            
             duration = meeting.get('duration', 0)
-            duration_str = f"{duration}min" if duration else ""
-
-            # Create option text
-            option_text = f"*{meeting['title']}*\n{time_str}"
-            if duration_str:
-                option_text += f" • {duration_str}"
+            duration_str = f"({duration} min)" if duration else ""
+            
+            option_text = f"{time_str} - {meeting['title']} {duration_str}"
 
             options.append({
                 "text": {
-                    "type": "mrkdwn",
-                    "text": option_text
+                    "type": "plain_text",
+                    "text": option_text[:75]  # Max 75 chars for option text
                 },
-                "value": str(meeting['recording_id'])  # Must be string for Slack
+                "value": str(meeting['recording_id'])
             })
 
-        # Add radio button group
-        blocks.append({
-            "type": "actions",
-            "block_id": "meeting_selection",
-            "elements": [
-                {
-                    "type": "radio_buttons",
-                    "action_id": "select_meeting",
+        # Add a select menu for meetings
+        if options:
+            blocks.append({
+                "type": "input",
+                "block_id": "meeting_selection_block",
+                "label": {
+                    "type": "plain_text",
+                    "text": "Select a meeting"
+                },
+                "element": {
+                    "type": "static_select",
+                    "action_id": "selected_meeting_id",
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "Choose a meeting..."
+                    },
                     "options": options
                 }
-            ]
-        })
-
-        blocks.append({
-            "type": "divider"
-        })
-
-        # Add process button
-        blocks.append({
-            "type": "actions",
-            "block_id": "process_meeting",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": "process_meeting_button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Generate Follow-up"
-                    },
-                    "style": "primary",
-                    "value": "process"
-                }
-            ]
-        })
+            })
 
         return blocks
 

@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Impostazioni | Crono Slack Assistant</title>
+    <style>
+        :root {
+            --bg: #f6f9fc;
+            --panel: #ffffff;
+            --accent: #1c7ed6;
+            --accent-2: #15aabf;
+            --text: #1f2933;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+            --success: #0f9d58;
+            --error: #c62828;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+            background: radial-gradient(circle at 10% 20%, #e3f2ff 0, transparent 25%), var(--bg);
+            color: var(--text);
+        }
+        .app-shell {
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            min-height: 100vh;
+        }
+        .sidebar {
+            background: linear-gradient(180deg, #0b7285 0%, #095c70 100%);
+            color: #e6f7ff;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .brand {
+            font-weight: 700;
+            font-size: 1.2rem;
+            letter-spacing: 0.01em;
+        }
+        .nav {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .nav button {
+            all: unset;
+            padding: 12px 14px;
+            border-radius: 10px;
+            cursor: pointer;
+            color: #e6f7ff;
+            background: rgba(255,255,255,0.08);
+            transition: background 0.15s ease, transform 0.1s ease;
+        }
+        .nav button:hover { background: rgba(255,255,255,0.14); transform: translateX(2px); }
+        .nav button.active { background: #e6f7ff; color: #0b7285; font-weight: 600; }
+        .content {
+            padding: 32px 40px;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 6px 10px;
+            background: #e0f2ff;
+            color: #0b7285;
+            border-radius: 999px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 20px;
+            box-shadow: 0 12px 30px rgba(16, 24, 40, 0.05);
+            margin-bottom: 16px;
+        }
+        .card h2 { margin: 0 0 8px; font-size: 1.1rem; }
+        .card p { margin: 0 0 16px; color: var(--muted); }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 14px;
+        }
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        label { font-weight: 600; color: var(--text); }
+        input, textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: #f8fafc;
+            font-size: 0.95rem;
+        }
+        textarea { min-height: 110px; resize: vertical; }
+        .muted { color: var(--muted); font-size: 0.9rem; }
+        .actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 12px;
+        }
+        .btn {
+            padding: 10px 16px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; }
+        .btn.secondary { background: #e5f3ff; color: #0b7285; }
+        .status {
+            margin-top: 16px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-weight: 600;
+            display: none;
+        }
+        .status.success { background: #e6f4ea; color: #1b5e20; border: 1px solid #c8e6c9; }
+        .status.error { background: #fdecea; color: #c62828; border: 1px solid #f5c6cb; }
+        @media (max-width: 960px) {
+            .app-shell { grid-template-columns: 1fr; }
+            .sidebar { flex-direction: row; flex-wrap: wrap; gap: 12px; }
+            .nav { flex-direction: row; flex-wrap: wrap; }
+            .nav button { width: auto; }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">Crono Slack Assistant</div>
+            <div class="nav" id="nav">
+                <button data-section="notetaker" class="active">Note Taker</button>
+                <button data-section="crono">Crono</button>
+                <button data-section="gmail">Gmail</button>
+                <button data-section="ai">Settings AI</button>
+            </div>
+        </aside>
+
+        <main class="content">
+            <div class="header">
+                <div>
+                    <div class="badge">Workspace Settings</div>
+                    <h1 style="margin:6px 0 4px;">Impostazioni Utente</h1>
+                    <p class="muted">Gestisci API key, integrazioni e prompt AI per email e note.</p>
+                </div>
+                <div class="form-group" style="min-width:240px;">
+                    <label for="slack-user-id">Slack User ID (es. U01234567)</label>
+                    <input type="text" id="slack-user-id" placeholder="Richiesto per caricare/salvare">
+                </div>
+            </div>
+
+            <div id="section-notetaker" class="card section">
+                <h2>Note Taker</h2>
+                <p>Configura Fathom e Piper per meeting, trascrizioni e appunti strutturati.</p>
+                <div class="grid">
+                    <div class="form-group">
+                        <label for="fathom-api-key">Fathom API Key</label>
+                        <input type="password" id="fathom-api-key" placeholder="Lascia vuoto per non modificare">
+                        <span class="muted">Le chiavi non vengono mostrate se già salvate.</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="piper-api-key">Piper.ai API Key</label>
+                        <input type="password" id="piper-api-key" placeholder="Lascia vuoto per non modificare">
+                        <span class="muted">Usata per note/estrazioni aggiuntive.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="section-crono" class="card section" style="display:none;">
+                <h2>Crono</h2>
+                <p>Imposta le credenziali Crono (public e private key) per creare task e aggiornare stage.</p>
+                <div class="grid">
+                    <div class="form-group">
+                        <label for="crono-public-key">Crono Public Key</label>
+                        <input type="password" id="crono-public-key" placeholder="Lascia vuoto per non modificare">
+                        <span class="muted">Chiave pubblica Crono.</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="crono-private-key">Crono Private Key</label>
+                        <input type="password" id="crono-private-key" placeholder="Lascia vuoto per non modificare">
+                        <span class="muted">Chiave privata Crono.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="section-gmail" class="card section" style="display:none;">
+                <h2>Gmail & Calendar</h2>
+                <p>Token OAuth per email e calendario (gestiti via backend).</p>
+                <div class="grid">
+                    <div class="form-group">
+                        <label for="gmail-token">Gmail Token</label>
+                        <input type="password" id="gmail-token" placeholder="Lascia vuoto per non modificare">
+                    </div>
+                    <div class="form-group">
+                        <label for="calendar-token">Calendar Token</label>
+                        <input type="password" id="calendar-token" placeholder="Lascia vuoto per non modificare">
+                    </div>
+                </div>
+            </div>
+
+            <div id="section-ai" class="card section" style="display:none;">
+                <h2>Settings AI</h2>
+                <p>Personalizza i prompt usati per email e note. (Salvati localmente nel browser finché il backend non li gestisce.)</p>
+                <div class="grid">
+                    <div class="form-group">
+                        <label for="email-tone">Tono Email</label>
+                        <input type="text" id="email-tone" placeholder="es. professional, friendly">
+                    </div>
+                    <div class="form-group">
+                        <label for="ai-email-prompt">Prompt per Email</label>
+                        <textarea id="ai-email-prompt" placeholder="Linee guida per la generazione delle email..."></textarea>
+                        <span class="muted">Salvato localmente (non ancora inviato al backend).</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="ai-notes-prompt">Prompt per Note</label>
+                        <textarea id="ai-notes-prompt" placeholder="Istruzioni per note/riassunti..."></textarea>
+                        <span class="muted">Salvato localmente (non ancora inviato al backend).</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button class="btn secondary" type="button" id="reset-prompts">Reset prompt locali</button>
+                <button class="btn primary" type="button" id="save-btn">Salva impostazioni</button>
+            </div>
+            <div id="status-message" class="status"></div>
+        </main>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const sections = document.querySelectorAll('.section');
+            const navButtons = document.querySelectorAll('.nav button');
+            const statusMessage = document.getElementById('status-message');
+            const slackUserIdInput = document.getElementById('slack-user-id');
+            const saveBtn = document.getElementById('save-btn');
+            const resetPromptsBtn = document.getElementById('reset-prompts');
+
+            // Fields present in the form; legacy crono_api_key removed from UI
+            const fields = ['crono_public_key', 'crono_private_key', 'fathom_api_key', 'piper_api_key', 'gmail_token', 'calendar_token', 'email_tone'];
+            const promptFields = ['ai-email-prompt', 'ai-notes-prompt']; // local only for now
+
+            navButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    navButtons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    const target = btn.dataset.section;
+                    sections.forEach(sec => sec.style.display = sec.id === `section-${target}` ? 'block' : 'none');
+                });
+            });
+
+            const showStatus = (message, isError) => {
+                statusMessage.textContent = message;
+                statusMessage.className = `status ${isError ? 'error' : 'success'}`;
+                statusMessage.style.display = 'block';
+            };
+
+            const loadPrompts = () => {
+                promptFields.forEach(id => {
+                    const val = localStorage.getItem(id);
+                    if (val) document.getElementById(id).value = val;
+                });
+            };
+
+            const savePrompts = () => {
+                promptFields.forEach(id => {
+                    const val = document.getElementById(id).value.trim();
+                    localStorage.setItem(id, val);
+                });
+            };
+
+            const resetPrompts = () => {
+                promptFields.forEach(id => {
+                    document.getElementById(id).value = '';
+                    localStorage.removeItem(id);
+                });
+                showStatus('Prompt locali resettati.', false);
+            };
+
+            const loadSettings = async () => {
+                const slackUserId = slackUserIdInput.value.trim();
+                if (!slackUserId) {
+                    fields.forEach(id => document.getElementById(id.replace(/_/g, '-')).value = '');
+                    return;
+                }
+                try {
+                    const response = await fetch('/api/settings', {
+                        headers: { 'X-User-Slack-ID': slackUserId }
+                    });
+                    if (response.ok) {
+                        const settings = await response.json();
+                        fields.forEach(id => {
+                            const input = document.getElementById(id.replace(/_/g, '-'));
+                            if (input && settings[id]) {
+                                if (id.includes('_key') || id.includes('token')) {
+                                    input.placeholder = "•••••••••• (già impostata)";
+                                    input.value = '';
+                                } else {
+                                    input.value = settings[id];
+                                }
+                            }
+                        });
+                    }
+                } catch (err) {
+                    console.error('Error loading settings:', err);
+                }
+            };
+
+            slackUserIdInput.addEventListener('blur', loadSettings);
+            resetPromptsBtn.addEventListener('click', resetPrompts);
+
+            saveBtn.addEventListener('click', async () => {
+                const slackUserId = slackUserIdInput.value.trim();
+                if (!slackUserId) {
+                    showStatus('Per favore, inserisci il tuo Slack User ID.', true);
+                    return;
+                }
+
+                const data = {};
+                fields.forEach(id => {
+                    const input = document.getElementById(id.replace(/_/g, '-'));
+                    if (input && input.value) data[id] = input.value;
+                });
+
+                try {
+                    const response = await fetch('/api/settings', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-User-Slack-ID': slackUserId
+                        },
+                        body: JSON.stringify(data)
+                    });
+                    const result = await response.json();
+                    if (response.ok) {
+                        showStatus(result.message || 'Impostazioni salvate con successo!', false);
+                        fields.forEach(id => {
+                            const input = document.getElementById(id.replace(/_/g, '-'));
+                            if (id.includes('_key') || id.includes('token')) {
+                                input.value = '';
+                                input.placeholder = "•••••••••• (già impostata)";
+                            }
+                        });
+                        savePrompts();
+                    } else {
+                        throw new Error(result.error || 'Errore sconosciuto');
+                    }
+                } catch (err) {
+                    showStatus(`Errore nel salvataggio: ${err.message}`, true);
+                }
+            });
+
+            loadPrompts();
+        });
+    </script>
+</body>
+</html>

@@ -2,7 +2,10 @@
 """Test Crono POST search with different payload formats"""
 import requests
 import os
+import pytest
 from dotenv import load_dotenv
+
+pytest.skip("Test incompleto: manca parametrizzazione search_term (richiede setup/manual run)", allow_module_level=True)
 
 load_dotenv()
 

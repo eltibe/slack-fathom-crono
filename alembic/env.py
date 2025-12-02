@@ -20,14 +20,7 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # Import all models so Alembic can detect them
-from src.models.base import Base
-from src.models.tenant import Tenant
-from src.models.user import User
-from src.models.crm_connection import CRMConnection
-from src.models.meeting_session import MeetingSession
-from src.models.account_mapping import AccountMapping
-from src.models.audit_log import AuditLog
-from src.models.api_rate_limit import APIRateLimit
+import src.models
 
 # This is the Alembic Config object
 config = context.config
@@ -42,7 +35,7 @@ if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
 # Add your model's MetaData object here for 'autogenerate' support
-target_metadata = Base.metadata
+target_metadata = src.models.Base.metadata
 
 
 def run_migrations_offline() -> None:
