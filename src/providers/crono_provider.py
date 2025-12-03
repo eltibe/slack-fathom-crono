@@ -34,7 +34,7 @@ class CronoProvider(CRMProvider):
         """
         self.public_key = credentials.get('public_key')
         self.private_key = credentials.get('private_key')
-        self.base_url = credentials.get('base_url', 'https://ext.crono.one/v1')
+        self.base_url = credentials.get('base_url', 'https://ext.crono.one/api/v1')
 
         if not self.public_key or not self.private_key:
             raise ValueError("Crono provider requires 'public_key' and 'private_key' credentials")
@@ -280,10 +280,12 @@ class CronoProvider(CRMProvider):
             Dict with 'id' (account_id) and 'created_at' if successful
         """
         try:
-            # Crono API v1 format - AccountId and description are mandatory
+            # Crono API v1 format - Data wrapper with AccountId and description
             payload = {
-                "AccountId": account_id,
-                "description": content
+                "Data": {
+                    "AccountId": account_id,
+                    "description": content
+                }
             }
 
             response = requests.post(
