@@ -2398,7 +2398,8 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
             logger.warning(f"Could not fetch meeting title: {e}")
 
         # Open the same task creation modal as /crono-add-task command
-        slack_web_client.views_open(
+        logger.info(f"🔄 Opening task modal with trigger_id...")
+        response = slack_web_client.views_open(
             trigger_id=trigger_id,
             view={
                 "type": "modal",
@@ -2480,7 +2481,7 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
             }
         )
 
-        logger.info(f"✅ Task modal opened successfully")
+        logger.info(f"✅ Task modal opened successfully - response: {response.get('ok', False)}")
 
         # Return empty response (200 OK) - Slack will show the new modal
         # Don't return jsonify with content or Slack will show checkmark
