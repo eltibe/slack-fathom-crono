@@ -1304,19 +1304,19 @@ def handle_create_crono_note(db, payload: Dict):
                 )
 
                 if note_id:
-                    # Update modal with success
+                    # Update modal with success message and remaining actions
                     slack_client.client.views_update(
                         view_id=view_id,
                         view={
                             "type": "modal",
-                            "title": {"type": "plain_text", "text": "Success!"},
+                            "title": {"type": "plain_text", "text": "Meeting Actions"},
                             "close": {"type": "plain_text", "text": "Close"},
                             "blocks": [
                                 {
                                     "type": "section",
                                     "text": {
                                         "type": "mrkdwn",
-                                        "text": f"✅ *Crono Note Created Successfully!*\n\n*Account:* {account_name}\n*Meeting:* {meeting_title}"
+                                        "text": f"✅ *Crono Note Created!*\n\n*Account:* {account_name}\n*Meeting:* {meeting_title}"
                                     }
                                 },
                                 {
@@ -1326,10 +1326,58 @@ def handle_create_crono_note(db, payload: Dict):
                                             "type": "button",
                                             "text": {
                                                 "type": "plain_text",
-                                                "text": "🔗 Open in Crono CRM"
+                                                "text": "🔗 Open in Crono"
                                             },
                                             "url": crono_url,
                                             "style": "primary"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "type": "divider"
+                                },
+                                {
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": "*Other Actions:*"
+                                    }
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {
+                                            "type": "button",
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": "Create Task"
+                                            },
+                                            "style": "primary",
+                                            "action_id": "create_crono_task",
+                                            "value": recording_id
+                                        },
+                                        {
+                                            "type": "button",
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": "Create Gmail Draft"
+                                            },
+                                            "action_id": "create_gmail_draft",
+                                            "value": recording_id
+                                        }
+                                    ]
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {
+                                            "type": "button",
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": "Create Calendar Event"
+                                            },
+                                            "action_id": "create_calendar_event",
+                                            "value": recording_id
                                         }
                                     ]
                                 }
