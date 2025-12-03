@@ -1890,7 +1890,6 @@ def handle_open_followup_edit_modal(db, payload: Dict):
                     {
                         "type": "input",
                         "block_id": "summary_block",
-                        "optional": True,
                         "label": {"type": "plain_text", "text": "Meeting Summary"},
                         "element": {
                             "type": "plain_text_input",
