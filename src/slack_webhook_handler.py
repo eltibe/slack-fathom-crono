@@ -2472,7 +2472,11 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
             }
         )
 
-        return jsonify({'status': 'ok'})
+        logger.info(f"✅ Task modal opened successfully")
+
+        # Return empty response (200 OK) - Slack will show the new modal
+        # Don't return jsonify with content or Slack will show checkmark
+        return ('', 200)
 
     except SlackApiError as e:
         logger.error(f"❌ Slack API error opening task modal: {e.response}")
