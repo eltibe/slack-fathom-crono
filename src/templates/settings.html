@@ -195,16 +195,29 @@
 
             <div id="section-gmail" class="card section" style="display:none;">
                 <h2>Gmail & Calendar</h2>
-                <p>Token OAuth per email e calendario (gestiti via backend).</p>
-                <div class="grid">
-                    <div class="form-group">
-                        <label for="gmail-token">Gmail Token</label>
-                        <input type="password" id="gmail-token" placeholder="Lascia vuoto per non modificare">
+                <p>Collega il tuo account Google per creare bozze email e eventi calendario.</p>
+
+                <div id="google-connected" style="display:none;">
+                    <div style="display: flex; align-items: center; gap: 12px; padding: 16px; background: #e6f4ea; border: 1px solid #c8e6c9; border-radius: 10px; margin-bottom: 16px;">
+                        <span style="font-size: 24px;">✓</span>
+                        <div style="flex: 1;">
+                            <strong style="color: #1b5e20;">Google Account Connected</strong>
+                            <p style="margin: 4px 0 0; color: #2e7d32; font-size: 0.9rem;" id="connected-email"></p>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="calendar-token">Calendar Token</label>
-                        <input type="password" id="calendar-token" placeholder="Lascia vuoto per non modificare">
+                    <button type="button" class="btn secondary" id="disconnect-google-btn">Disconnetti Account Google</button>
+                </div>
+
+                <div id="google-not-connected" style="display:none;">
+                    <div style="padding: 16px; background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 10px; margin-bottom: 16px;">
+                        <p style="margin: 0; color: #e65100; font-weight: 500;">Account Google non collegato</p>
+                        <p style="margin: 8px 0 0; color: #f57c00; font-size: 0.9rem;">Connetti il tuo account Google per abilitare la creazione di bozze email e eventi calendario.</p>
                     </div>
+                    <button type="button" class="btn primary" id="connect-google-btn">Connetti Account Google</button>
+                </div>
+
+                <div id="google-loading" style="padding: 16px; text-align: center; color: #6b7280;">
+                    Verifico lo stato della connessione...
                 </div>
             </div>
 
@@ -246,8 +259,17 @@
             const saveBtn = document.getElementById('save-btn');
             const resetPromptsBtn = document.getElementById('reset-prompts');
 
+            // Google OAuth elements
+            const googleConnected = document.getElementById('google-connected');
+            const googleNotConnected = document.getElementById('google-not-connected');
+            const googleLoading = document.getElementById('google-loading');
+            const connectGoogleBtn = document.getElementById('connect-google-btn');
+            const disconnectGoogleBtn = document.getElementById('disconnect-google-btn');
+            const connectedEmail = document.getElementById('connected-email');
+
             // Fields present in the form; legacy crono_api_key removed from UI
-            const fields = ['crono_public_key', 'crono_private_key', 'fathom_api_key', 'piper_api_key', 'gmail_token', 'calendar_token', 'email_tone'];
+            // Note: gmail_token and calendar_token removed since they're now managed via OAuth
+            const fields = ['crono_public_key', 'crono_private_key', 'fathom_api_key', 'piper_api_key', 'email_tone'];
             const promptFields = ['ai-email-prompt', 'ai-notes-prompt']; // local only for now
 
             navButtons.forEach(btn => {
@@ -316,8 +338,105 @@
                 }
             };
 
-            slackUserIdInput.addEventListener('blur', loadSettings);
+            slackUserIdInput.addEventListener('blur', () => {
+                loadSettings();
+                checkGoogleStatus();
+            });
             resetPromptsBtn.addEventListener('click', resetPrompts);
+
+            // Google OAuth functions
+            const checkGoogleStatus = async () => {
+                const slackUserId = slackUserIdInput.value.trim();
+                if (!slackUserId) {
+                    googleLoading.style.display = 'block';
+                    googleConnected.style.display = 'none';
+                    googleNotConnected.style.display = 'none';
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/google/status?slack_user_id=${encodeURIComponent(slackUserId)}`);
+                    const data = await response.json();
+
+                    googleLoading.style.display = 'none';
+
+                    if (data.connected) {
+                        googleConnected.style.display = 'block';
+                        googleNotConnected.style.display = 'none';
+                        connectedEmail.textContent = data.email || 'Account collegato';
+                    } else {
+                        googleConnected.style.display = 'none';
+                        googleNotConnected.style.display = 'block';
+                    }
+                } catch (err) {
+                    console.error('Error checking Google status:', err);
+                    googleLoading.style.display = 'none';
+                    googleNotConnected.style.display = 'block';
+                }
+            };
+
+            connectGoogleBtn.addEventListener('click', () => {
+                const slackUserId = slackUserIdInput.value.trim();
+                if (!slackUserId) {
+                    showStatus('Per favore, inserisci il tuo Slack User ID.', true);
+                    return;
+                }
+
+                // Open OAuth flow in new window
+                const oauthUrl = `/oauth/google/start?slack_user_id=${encodeURIComponent(slackUserId)}`;
+                const width = 600;
+                const height = 700;
+                const left = (screen.width / 2) - (width / 2);
+                const top = (screen.height / 2) - (height / 2);
+
+                const oauthWindow = window.open(
+                    oauthUrl,
+                    'GoogleOAuth',
+                    `width=${width},height=${height},left=${left},top=${top}`
+                );
+
+                // Poll for OAuth completion
+                const checkInterval = setInterval(() => {
+                    if (oauthWindow.closed) {
+                        clearInterval(checkInterval);
+                        // Recheck status after OAuth window closes
+                        checkGoogleStatus();
+                    }
+                }, 1000);
+            });
+
+            disconnectGoogleBtn.addEventListener('click', async () => {
+                const slackUserId = slackUserIdInput.value.trim();
+                if (!slackUserId) {
+                    showStatus('Per favore, inserisci il tuo Slack User ID.', true);
+                    return;
+                }
+
+                if (!confirm('Sei sicuro di voler disconnettere il tuo account Google?')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/google/disconnect', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ slack_user_id: slackUserId })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        showStatus('Account Google disconnesso con successo.', false);
+                        checkGoogleStatus();
+                    } else {
+                        throw new Error(result.error || 'Errore sconosciuto');
+                    }
+                } catch (err) {
+                    showStatus(`Errore nella disconnessione: ${err.message}`, true);
+                }
+            });
 
             saveBtn.addEventListener('click', async () => {
                 const slackUserId = slackUserIdInput.value.trim();

@@ -14,13 +14,17 @@ import time
 import sys
 import ssl
 import logging
+import base64
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta, timezone
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, redirect, url_for
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from slack_sdk.signature import SignatureVerifier
 from dotenv import load_dotenv
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request as GoogleRequest
 
 from src.modules.slack_client import SlackClient
 from src.modules.slack_slash_commands import SlackSlashCommandHandler
@@ -79,6 +83,44 @@ slack_web_client = WebClient(token=os.getenv('SLACK_BOT_TOKEN'), ssl=ssl_context
 
 # Signature verifier for security
 signature_verifier = SignatureVerifier(os.getenv('SLACK_SIGNING_SECRET'))
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
+GOOGLE_SCOPES = [
+    'https://www.googleapis.com/auth/gmail.compose',
+    'https://www.googleapis.com/auth/calendar'
+]
+
+# ASSUMPTION: Using environment variable for redirect URI to support both local and production
+# In production, this should be set to https://your-domain.com/oauth/google/callback
+GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/oauth/google/callback')
+
+def create_google_oauth_flow():
+    """
+    Create a Google OAuth flow instance.
+
+    Returns:
+        Flow: Configured OAuth flow object
+    """
+    # ASSUMPTION: Creating client config from environment variables since we don't have credentials.json
+    client_config = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [GOOGLE_REDIRECT_URI]
+        }
+    }
+
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=GOOGLE_SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI
+    )
+
+    return flow
 
 # Database-backed conversation state functions
 def get_conversation_state(db, state_key: str) -> Optional[Dict]:
@@ -2743,6 +2785,271 @@ def save_user_settings_api():
 
     except Exception as e:
         logger.error(f"Error in save_user_settings: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# GOOGLE OAUTH ROUTES
+# ============================================================================
+
+@app.route('/oauth/google/start', methods=['GET'])
+def google_oauth_start():
+    """
+    Initiate Google OAuth flow.
+
+    Expected query parameters:
+        - slack_user_id: User's Slack ID
+        - team_id: Slack team/workspace ID (optional, defaults to hardcoded tenant)
+
+    Redirects user to Google OAuth consent screen.
+    """
+    slack_user_id = request.args.get('slack_user_id')
+    team_id = request.args.get('team_id', 'T02R43CJEMA')  # ASSUMPTION: Default to known tenant
+
+    if not slack_user_id:
+        return jsonify({"error": "slack_user_id parameter required"}), 400
+
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        logger.error("Google OAuth credentials not configured")
+        return jsonify({"error": "Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"}), 500
+
+    try:
+        # Create OAuth flow
+        flow = create_google_oauth_flow()
+
+        # Encode user context in state parameter
+        state_data = {
+            "slack_user_id": slack_user_id,
+            "team_id": team_id
+        }
+        state_json = json.dumps(state_data)
+        state_encoded = base64.urlsafe_b64encode(state_json.encode()).decode()
+
+        # Generate authorization URL
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',  # Get refresh token
+            prompt='consent',  # Force consent to ensure refresh token
+            state=state_encoded,
+            include_granted_scopes='true'
+        )
+
+        logger.info(f"Starting OAuth flow for user {slack_user_id}")
+        return redirect(authorization_url)
+
+    except Exception as e:
+        logger.error(f"Error starting OAuth flow: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to start OAuth flow: {str(e)}"}), 500
+
+
+@app.route('/oauth/google/callback', methods=['GET'])
+def google_oauth_callback():
+    """
+    Handle Google OAuth callback.
+
+    Receives authorization code, exchanges it for tokens,
+    and saves them to the database.
+    """
+    # Check for errors from Google
+    error = request.args.get('error')
+    if error:
+        logger.error(f"OAuth error from Google: {error}")
+        return render_template('oauth_result.html',
+                               success=False,
+                               message=f"Authentication failed: {error}"), 400
+
+    # Get authorization code
+    code = request.args.get('code')
+    state_encoded = request.args.get('state')
+
+    if not code or not state_encoded:
+        return jsonify({"error": "Missing code or state parameter"}), 400
+
+    try:
+        # Decode state to get user context
+        state_json = base64.urlsafe_b64decode(state_encoded.encode()).decode()
+        state_data = json.loads(state_json)
+        slack_user_id = state_data.get('slack_user_id')
+        team_id = state_data.get('team_id', 'T02R43CJEMA')
+
+        if not slack_user_id:
+            return jsonify({"error": "Invalid state parameter"}), 400
+
+        # Create OAuth flow
+        flow = create_google_oauth_flow()
+
+        # Exchange authorization code for tokens
+        flow.fetch_token(code=code)
+
+        # Get credentials
+        credentials = flow.credentials
+
+        # Prepare token JSON to store in database
+        token_data = {
+            'token': credentials.token,
+            'refresh_token': credentials.refresh_token,
+            'token_uri': credentials.token_uri,
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret,
+            'scopes': credentials.scopes,
+            'expiry': credentials.expiry.isoformat() if credentials.expiry else None
+        }
+        token_json = json.dumps(token_data)
+
+        # Save to database
+        with get_db() as db:
+            # Find tenant
+            tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+            if not tenant:
+                logger.error(f"Tenant not found: {team_id}")
+                return jsonify({"error": "Tenant not found"}), 404
+
+            # Find or create user
+            user = db.query(User).filter(
+                User.slack_user_id == slack_user_id,
+                User.tenant_id == tenant.id
+            ).first()
+
+            if not user:
+                user = User(
+                    tenant_id=tenant.id,
+                    slack_user_id=slack_user_id,
+                    is_active=True
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+
+            # Find or create settings
+            if not user.settings:
+                settings = UserSettings(
+                    tenant_id=tenant.id,
+                    user_id=user.id
+                )
+                db.add(settings)
+                db.commit()
+                db.refresh(settings)
+            else:
+                settings = user.settings
+
+            # Save tokens (same token works for both Gmail and Calendar)
+            settings.gmail_token = token_json
+            settings.calendar_token = token_json
+            db.commit()
+
+            logger.info(f"✅ Saved Google OAuth tokens for user {slack_user_id}")
+
+        # Return success page
+        return render_template('oauth_result.html',
+                               success=True,
+                               message="Successfully connected your Google account! You can close this window and return to Slack.")
+
+    except Exception as e:
+        logger.error(f"Error in OAuth callback: {e}", exc_info=True)
+        return render_template('oauth_result.html',
+                               success=False,
+                               message=f"Failed to complete authentication: {str(e)}"), 500
+
+
+@app.route('/api/google/status', methods=['GET'])
+def google_oauth_status():
+    """
+    Check if user has connected their Google account.
+
+    Expected query parameters:
+        - slack_user_id: User's Slack ID
+        - team_id: Slack team/workspace ID (optional)
+
+    Returns:
+        JSON with connection status and email if available
+    """
+    slack_user_id = request.args.get('slack_user_id')
+    team_id = request.args.get('team_id', 'T02R43CJEMA')
+
+    if not slack_user_id:
+        return jsonify({"error": "slack_user_id parameter required"}), 400
+
+    try:
+        with get_db() as db:
+            # Find tenant
+            tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+            if not tenant:
+                return jsonify({"connected": False, "error": "Tenant not found"}), 200
+
+            # Find user
+            user = db.query(User).filter(
+                User.slack_user_id == slack_user_id,
+                User.tenant_id == tenant.id
+            ).first()
+
+            if not user or not user.settings or not user.settings.gmail_token:
+                return jsonify({"connected": False}), 200
+
+            # Check if token is valid
+            token_json = user.settings.gmail_token
+            token_data = json.loads(token_json)
+
+            # ASSUMPTION: If we have a token, consider it connected
+            # We'll handle refresh in the actual Gmail/Calendar modules
+            response = {
+                "connected": True,
+                "email": token_data.get('email', 'Connected')  # Email might not be in token
+            }
+
+            return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error checking Google OAuth status: {e}")
+        return jsonify({"connected": False, "error": str(e)}), 200
+
+
+@app.route('/api/google/disconnect', methods=['POST'])
+def google_oauth_disconnect():
+    """
+    Disconnect Google account by removing stored tokens.
+
+    Expected JSON body:
+        - slack_user_id: User's Slack ID
+        - team_id: Slack team/workspace ID (optional)
+
+    Returns:
+        Success message
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
+    slack_user_id = data.get('slack_user_id')
+    team_id = data.get('team_id', 'T02R43CJEMA')
+
+    if not slack_user_id:
+        return jsonify({"error": "slack_user_id required"}), 400
+
+    try:
+        with get_db() as db:
+            # Find tenant
+            tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+            if not tenant:
+                return jsonify({"error": "Tenant not found"}), 404
+
+            # Find user
+            user = db.query(User).filter(
+                User.slack_user_id == slack_user_id,
+                User.tenant_id == tenant.id
+            ).first()
+
+            if not user or not user.settings:
+                return jsonify({"message": "No settings to disconnect"}), 200
+
+            # Clear tokens
+            user.settings.gmail_token = None
+            user.settings.calendar_token = None
+            db.commit()
+
+            logger.info(f"✅ Disconnected Google account for user {slack_user_id}")
+            return jsonify({"message": "Google account disconnected successfully"}), 200
+
+    except Exception as e:
+        logger.error(f"Error disconnecting Google account: {e}")
         return jsonify({"error": str(e)}), 500
 
 

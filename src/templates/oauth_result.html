@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OAuth Result | Crono Slack Assistant</title>
+    <style>
+        :root {
+            --bg: #f6f9fc;
+            --panel: #ffffff;
+            --accent: #1c7ed6;
+            --success: #0f9d58;
+            --error: #c62828;
+            --text: #1f2933;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+            background: radial-gradient(circle at 10% 20%, #e3f2ff 0, transparent 25%), var(--bg);
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 48px 40px;
+            box-shadow: 0 12px 40px rgba(16, 24, 40, 0.08);
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .icon {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+        }
+
+        .icon.success {
+            background: #e6f4ea;
+            color: var(--success);
+        }
+
+        .icon.error {
+            background: #fdecea;
+            color: var(--error);
+        }
+
+        h1 {
+            margin: 0 0 16px;
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        .success h1 {
+            color: var(--success);
+        }
+
+        .error h1 {
+            color: var(--error);
+        }
+
+        p {
+            margin: 0 0 32px;
+            color: var(--muted);
+            line-height: 1.6;
+            font-size: 1rem;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            text-decoration: none;
+            background: linear-gradient(135deg, var(--accent), #15aabf);
+            color: #fff;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(28, 126, 214, 0.3);
+        }
+
+        .btn.secondary {
+            background: #e5f3ff;
+            color: #0b7285;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 32px 24px;
+            }
+
+            h1 {
+                font-size: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        {% if success %}
+        <div class="icon success">✓</div>
+        <h1 class="success">Authentication Successful!</h1>
+        <p>{{ message }}</p>
+        <button class="btn" onclick="window.close()">Close Window</button>
+        {% else %}
+        <div class="icon error">✕</div>
+        <h1 class="error">Authentication Failed</h1>
+        <p>{{ message }}</p>
+        <a href="/settings" class="btn secondary">Return to Settings</a>
+        {% endif %}
+    </div>
+</body>
+</html>

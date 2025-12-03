@@ -3,14 +3,14 @@ Gmail Draft Creator
 Creates email drafts in Gmail using the Gmail API
 """
 
-import os
+import json
 import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, List
+from typing import Optional, List, Callable
+from datetime import datetime
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -23,49 +23,87 @@ SCOPES = [
 
 
 class GmailDraftCreator:
-    def __init__(self, credentials_file: str = 'credentials.json', token_file: str = 'token.json'):
+    def __init__(self, token_json: str, token_save_callback: Optional[Callable[[str], None]] = None):
         """
-        Initialize Gmail client with OAuth credentials
+        Initialize Gmail client with OAuth credentials from database.
 
         Args:
-            credentials_file: Path to OAuth credentials JSON file from Google Cloud Console
-            token_file: Path to store the OAuth token (auto-generated)
+            token_json: JSON string containing OAuth token data from database
+            token_save_callback: Optional callback function to save refreshed tokens back to database.
+                                 Should accept a single argument: the updated token JSON string.
+
+        Example:
+            def save_token(new_token_json):
+                # Save new_token_json back to database
+                user.settings.gmail_token = new_token_json
+                db.commit()
+
+            gmail = GmailDraftCreator(user.settings.gmail_token, save_token)
         """
-        self.credentials_file = credentials_file
-        self.token_file = token_file
+        self.token_json = token_json
+        self.token_save_callback = token_save_callback
         self.service = None
         self._authenticate()
 
     def _authenticate(self):
-        """Authenticate with Gmail API using OAuth"""
-        creds = None
+        """
+        Authenticate with Gmail API using OAuth tokens from database.
 
-        # Check if we have a saved token
-        if os.path.exists(self.token_file):
-            creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
+        Handles token refresh automatically and calls the save callback
+        if tokens are refreshed.
+        """
+        if not self.token_json:
+            raise ValueError("No OAuth token provided. Please authenticate via /oauth/google/start")
 
-        # If credentials are invalid or don't exist, authenticate
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
+        try:
+            # Parse token JSON from database
+            token_data = json.loads(self.token_json)
+
+            # Parse expiry datetime if present
+            expiry = None
+            if token_data.get('expiry'):
+                try:
+                    expiry = datetime.fromisoformat(token_data['expiry'])
+                except (ValueError, TypeError):
+                    # If expiry parsing fails, let it be None and token will refresh if needed
+                    pass
+
+            # Create credentials object from token data
+            creds = Credentials(
+                token=token_data.get('token'),
+                refresh_token=token_data.get('refresh_token'),
+                token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                client_id=token_data.get('client_id'),
+                client_secret=token_data.get('client_secret'),
+                scopes=token_data.get('scopes', SCOPES)
+            )
+
+            # Set expiry if available
+            if expiry:
+                creds.expiry = expiry
+
+            # Check if token needs refresh
+            if not creds.valid and creds.expired and creds.refresh_token:
+                # Refresh the token
                 creds.refresh(Request())
-            else:
-                if not os.path.exists(self.credentials_file):
-                    raise FileNotFoundError(
-                        f"Credentials file '{self.credentials_file}' not found. "
-                        "Please download it from Google Cloud Console."
-                    )
 
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_file, SCOPES
-                )
-                creds = flow.run_local_server(port=0)
+                # Update token data with new values
+                token_data['token'] = creds.token
+                token_data['expiry'] = creds.expiry.isoformat() if creds.expiry else None
 
-            # Save credentials for future use
-            with open(self.token_file, 'w') as token:
-                token.write(creds.to_json())
+                # Save refreshed token back to database via callback
+                if self.token_save_callback:
+                    updated_token_json = json.dumps(token_data)
+                    self.token_save_callback(updated_token_json)
+                    self.token_json = updated_token_json
 
-        # Build the Gmail service
-        self.service = build('gmail', 'v1', credentials=creds)
+            # Build the Gmail service
+            self.service = build('gmail', 'v1', credentials=creds)
+
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid token JSON format: {e}")
+        except Exception as e:
+            raise Exception(f"Failed to authenticate with Gmail: {e}")
 
     def create_draft(
         self,
@@ -222,10 +260,41 @@ class GmailDraftCreator:
 
 
 if __name__ == "__main__":
-    # Test the Gmail draft creator
+    # Test the Gmail draft creator with database-backed tokens
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    print("=" * 60)
+    print("Gmail Draft Creator - Database Token Test")
+    print("=" * 60)
+    print("\nNOTE: This test requires you to:")
+    print("1. Authenticate via the web OAuth flow (/oauth/google/start)")
+    print("2. Provide the token JSON from your database")
+    print("\nFor production usage, tokens are loaded from the database")
+    print("via UserSettings.gmail_token")
+    print("=" * 60)
+
+    # ASSUMPTION: For testing, we expect the token to be provided via environment variable
+    # In production, this would come from the database
+    token_json = os.getenv('TEST_GMAIL_TOKEN_JSON')
+
+    if not token_json:
+        print("\n❌ No token found for testing.")
+        print("Please set TEST_GMAIL_TOKEN_JSON environment variable")
+        print("or authenticate via the web OAuth flow first.")
+        exit(1)
+
     try:
-        print("Initializing Gmail draft creator...")
-        gmail = GmailDraftCreator()
+        print("\nInitializing Gmail draft creator with database token...")
+
+        # Example of how to use with a save callback
+        def save_token_callback(new_token_json):
+            print(f"\n✓ Token refreshed! New token would be saved to database.")
+            # In production: user.settings.gmail_token = new_token_json; db.commit()
+
+        gmail = GmailDraftCreator(token_json, token_save_callback=save_token_callback)
 
         sample_email = """Subject: Follow-up: Product Planning Meeting
 
@@ -252,11 +321,7 @@ Best regards"""
             print("\n✓ Draft created successfully!")
             print("Check your Gmail drafts folder.")
 
-    except FileNotFoundError as e:
-        print(f"\nError: {e}")
-        print("\nTo use Gmail API, you need to:")
-        print("1. Go to Google Cloud Console")
-        print("2. Create a project and enable Gmail API")
-        print("3. Download OAuth credentials as 'credentials.json'")
+    except ValueError as e:
+        print(f"\n❌ Configuration Error: {e}")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"\n❌ Error: {e}")
