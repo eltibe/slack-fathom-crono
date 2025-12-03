@@ -503,6 +503,58 @@ class CronoProvider(CRMProvider):
         except Exception as e:
             raise CRMIntegrationError(f"Failed to update deal {deal_id} to stage {stage}: {e}")
 
+    def update_deal(self, deal_id: str, amount: Optional[float] = None, stage: Optional[str] = None) -> Dict:
+        """
+        Update deal/opportunity in Crono (amount and/or stage).
+
+        Args:
+            deal_id: Crono opportunity objectId
+            amount: New amount value (optional)
+            stage: New stage name (optional)
+
+        Returns:
+            Updated deal data from Crono API
+        """
+        payload_data = {}
+
+        if amount is not None:
+            payload_data["amount"] = amount
+
+        if stage is not None:
+            # Map the stage to Crono-specific stage name
+            crono_stage = self.get_stage_mapping().get(stage.lower())
+            if not crono_stage:
+                raise ValueError(f"Unknown deal stage: {stage}")
+            payload_data["stage"] = crono_stage
+
+        if not payload_data:
+            raise ValueError("Must provide at least one field to update (amount or stage)")
+
+        payload = {"data": payload_data}
+
+        try:
+            api_url = "https://ext.crono.one/api/v1"
+            response = requests.put(
+                f"{api_url}/Opportunities/{deal_id}",
+                headers=self.headers,
+                json=payload,
+                timeout=10
+            )
+
+            if response.status_code in [200, 201]:
+                result = response.json()
+                if result.get('isSuccess'):
+                    print(f"✅ Deal {deal_id} updated successfully")
+                    return result.get('data', {})
+                else:
+                    errors = result.get('errors', [])
+                    raise Exception(f"Crono deal update failed: {errors}")
+            else:
+                raise Exception(f"Crono API error: {response.status_code}")
+
+        except Exception as e:
+            raise CRMIntegrationError(f"Failed to update deal {deal_id}: {e}")
+
     def get_stage_mapping(self) -> Dict[str, str]:
         """Get mapping from standard stages to Crono-specific stage names.
 

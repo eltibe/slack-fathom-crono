@@ -543,6 +543,8 @@ def slack_interactions():
                 return handle_crono_task_submission(db, payload)
             elif callback_id == 'followup_meeting_select_modal':
                 return handle_followup_meeting_submission(db, payload)
+            elif callback_id == 'edit_crono_deal_modal':
+                return handle_edit_crono_deal_submission(db, payload)
 
         return jsonify({'status': 'ok'})
 
@@ -2085,83 +2087,156 @@ def handle_view_crono_deals(db, payload: Dict):
                 crono_url = f"https://app.crono.one/accounts/{account_id}"
 
                 # Get deals for the account
-                deals = crm_provider.get_deals(account_id, limit=100)
+                all_deals = crm_provider.get_deals(account_id, limit=100)
 
-                if deals:
-                    logger.info(f"✅ Found {len(deals)} deals for account {account_id}")
+                # Filter out closed deals
+                open_deals = [
+                    deal for deal in all_deals
+                    if deal.get('stage', '').lower() not in ['closed won', 'closed lost']
+                ]
 
-                    # Format deals for Slack display
-                    deals_text = f"💰 *Crono Deals for {account_name}:*\n\n"
-                    for deal in deals:
-                        deal_name = deal.get('name', 'N/A')
-                        deal_stage = deal.get('stage', 'N/A')
-                        deal_amount = deal.get('amount', 'N/A')
-                        deal_id = deal.get('objectId', 'N/A')
-                        deals_text += f"• *{deal_name}* (ID: {deal_id})\n"
-                        deals_text += f"  Stage: {deal_stage}\n"
-                        deals_text += f"  Amount: {deal_amount}\n\n"
-                    deals_text += "\n_Only showing first 100 deals._" # Limit set in get_deals_for_account
-
+                if not open_deals:
+                    logger.warning(f"⚠️ No open deals found for account {account_id}")
                     if response_url:
                         requests.post(response_url, json={
                             "response_type": "ephemeral",
                             "replace_original": False,
-                            "text": deals_text,
-                            "blocks": [
-                                {
-                                    "type": "section",
-                                    "text": {
-                                        "type": "mrkdwn",
-                                        "text": deals_text
-                                    }
-                                },
-                                {
-                                    "type": "actions",
-                                    "elements": [
-                                        {
-                                            "type": "button",
-                                            "text": {
-                                                "type": "plain_text",
-                                                "text": "🔗 Open in Crono CRM"
-                                            },
-                                            "url": crono_url,
-                                            "style": "primary"
-                                        }
-                                    ]
-                                }
-                            ]
+                            "text": f"⚠️ No open deals found for account '{account_name}'.\n\nAll deals are either Closed Won or Closed Lost."
                         }, timeout=5)
-                else:
-                    logger.warning(f"⚠️ No deals found for account {account_id}")
-                    no_deals_text = f"⚠️ No Crono deals found for account '{account_name}'."
+                    return
+
+                # Sort by date (most recent first) - use lastModifiedDate or createdDate
+                open_deals.sort(
+                    key=lambda d: d.get('lastModifiedDate', d.get('createdDate', '')),
+                    reverse=True
+                )
+
+                # Get the most recent deal
+                latest_deal = open_deals[0]
+                deal_id = latest_deal.get('objectId') or latest_deal.get('id')
+                deal_name = latest_deal.get('name', 'Unknown Deal')
+                deal_stage = latest_deal.get('stage', 'Unknown')
+                deal_amount = latest_deal.get('amount', 0)
+                deal_currency = latest_deal.get('currency', 'USD')
+                deal_close_date = latest_deal.get('closeDate', 'N/A')
+
+                logger.info(f"✅ Found most recent open deal: {deal_name} (ID: {deal_id})")
+
+                # Store deal data in conversation state for submission handler
+                user_id = payload.get('user', {}).get('id')
+                state_key = f"deal_edit_{user_id}_{deal_id}"
+                store_conversation_state(db, state_key, {
+                    'deal_id': deal_id,
+                    'account_id': account_id,
+                    'account_name': account_name,
+                    'recording_id': recording_id
+                })
+
+                # Get available stages for dropdown
+                available_stages = [
+                    {"text": {"type": "plain_text", "text": "Lead"}, "value": "Lead"},
+                    {"text": {"type": "plain_text", "text": "Qualified"}, "value": "Qualified"},
+                    {"text": {"type": "plain_text", "text": "Proposal"}, "value": "Proposal"},
+                    {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "Negotiation"},
+                    {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "Closed Won"},
+                    {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "Closed Lost"}
+                ]
+
+                # Find current stage option for initial selection
+                initial_stage = next(
+                    (opt for opt in available_stages if opt["value"] == deal_stage),
+                    available_stages[0]
+                )
+
+                # Get trigger_id for opening modal
+                trigger_id = payload.get('trigger_id')
+                if not trigger_id:
+                    logger.error("❌ No trigger_id found in payload")
                     if response_url:
                         requests.post(response_url, json={
                             "response_type": "ephemeral",
                             "replace_original": False,
-                            "text": no_deals_text,
+                            "text": "❌ Error: Could not open modal (no trigger_id)"
+                        }, timeout=5)
+                    return
+
+                # Open modal with deal details using views.push
+                # Note: Must use views.push() because trigger comes from button in modal
+                try:
+                    from modules.slack_client import SlackClient
+                    slack_client_inst = SlackClient()
+                    slack_web_client = slack_client_inst._client
+
+                    logger.info(f"🔄 Pushing deal edit modal for deal {deal_id}...")
+                    slack_web_client.views_push(
+                        trigger_id=trigger_id,
+                        view={
+                            "type": "modal",
+                            "callback_id": "edit_crono_deal_modal",
+                            "private_metadata": state_key,  # Store state key for submission
+                            "title": {"type": "plain_text", "text": "Edit Deal"},
+                            "submit": {"type": "plain_text", "text": "Save Changes"},
+                            "close": {"type": "plain_text", "text": "Cancel"},
                             "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": f"💰 {deal_name}"}
+                                },
                                 {
                                     "type": "section",
                                     "text": {
                                         "type": "mrkdwn",
-                                        "text": no_deals_text
+                                        "text": f"*Account:* {account_name}\n*Deal ID:* `{deal_id}`\n*Close Date:* {deal_close_date}"
                                     }
                                 },
+                                {"type": "divider"},
                                 {
-                                    "type": "actions",
+                                    "type": "input",
+                                    "block_id": "deal_amount_block",
+                                    "label": {"type": "plain_text", "text": "Amount"},
+                                    "element": {
+                                        "type": "number_input",
+                                        "action_id": "deal_amount_input",
+                                        "is_decimal_allowed": True,
+                                        "initial_value": str(deal_amount) if deal_amount else "0",
+                                        "placeholder": {"type": "plain_text", "text": "Enter deal amount"}
+                                    },
+                                    "hint": {"type": "plain_text", "text": f"Currency: {deal_currency}"}
+                                },
+                                {
+                                    "type": "input",
+                                    "block_id": "deal_stage_block",
+                                    "label": {"type": "plain_text", "text": "Stage"},
+                                    "element": {
+                                        "type": "static_select",
+                                        "action_id": "deal_stage_select",
+                                        "initial_option": initial_stage,
+                                        "options": available_stages
+                                    }
+                                },
+                                {"type": "divider"},
+                                {
+                                    "type": "context",
                                     "elements": [
                                         {
-                                            "type": "button",
-                                            "text": {
-                                                "type": "plain_text",
-                                                "text": "🔗 Open in Crono CRM"
-                                            },
-                                            "url": crono_url,
-                                            "style": "primary"
+                                            "type": "mrkdwn",
+                                            "text": f"_Showing most recent open deal. Total open deals: {len(open_deals)}_"
                                         }
                                     ]
                                 }
                             ]
+                        }
+                    )
+                    logger.info(f"✅ Deal edit modal pushed successfully")
+                except Exception as modal_error:
+                    logger.error(f"❌ Error pushing modal: {modal_error}")
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                    if response_url:
+                        requests.post(response_url, json={
+                            "response_type": "ephemeral",
+                            "replace_original": False,
+                            "text": f"❌ Error opening deal modal: {str(modal_error)}"
                         }, timeout=5)
 
             except Exception as e:
@@ -3113,6 +3188,97 @@ def handle_crono_task_submission(db, payload: dict):
 def settings_page():
     """Serve the settings HTML page."""
     return render_template('settings.html')
+
+
+def handle_edit_crono_deal_submission(db, payload: Dict):
+    """
+    Handle submission of edit deal modal.
+    Updates deal amount and/or stage in Crono CRM.
+    """
+    import sys
+
+    try:
+        user_id = payload.get('user', {}).get('id')
+        team_id = payload.get('team', {}).get('id')
+
+        # Get state key from private_metadata
+        state_key = payload.get('view', {}).get('private_metadata')
+
+        if not state_key:
+            logger.error("❌ No state key in private_metadata")
+            return jsonify({
+                'response_action': 'errors',
+                'errors': {'deal_amount_block': 'Session expired. Please try again.'}
+            })
+
+        # Retrieve deal context from state
+        state = get_conversation_state(db, state_key)
+        if not state:
+            logger.error(f"❌ No state found for key {state_key}")
+            return jsonify({
+                'response_action': 'errors',
+                'errors': {'deal_amount_block': 'Session expired. Please try again.'}
+            })
+
+        deal_id = state.get('deal_id')
+        account_id = state.get('account_id')
+        account_name = state.get('account_name')
+
+        # Extract form values
+        view_state = payload.get('view', {}).get('state', {}).get('values', {})
+
+        # Get amount
+        amount_str = view_state.get('deal_amount_block', {}).get('deal_amount_input', {}).get('value')
+        new_amount = float(amount_str) if amount_str else None
+
+        # Get stage
+        stage_obj = view_state.get('deal_stage_block', {}).get('deal_stage_select', {}).get('selected_option')
+        new_stage = stage_obj.get('value') if stage_obj else None
+
+        logger.info(f"💰 Updating deal {deal_id}: amount={new_amount}, stage={new_stage}")
+
+        # Get CRM credentials
+        credentials = get_user_crm_credentials(db, user_id, team_id)
+        if not credentials:
+            logger.error("❌ No CRM credentials found")
+            return jsonify({
+                'response_action': 'errors',
+                'errors': {'deal_amount_block': 'Crono credentials not found. Please run /crono-connect first.'}
+            })
+
+        # Update deal in Crono
+        from providers.crono_provider import CronoProvider
+        crm_provider = CronoProvider(credentials=credentials)
+        updated_deal = crm_provider.update_deal(
+            deal_id=deal_id,
+            amount=new_amount,
+            stage=new_stage
+        )
+
+        logger.info(f"✅ Deal updated successfully: {updated_deal}")
+
+        # Clean up state
+        delete_conversation_state(db, state_key)
+
+        # Send success message to user
+        from modules.slack_client import SlackClient
+        slack_client = SlackClient()
+        slack_client.send_dm(
+            user_id=user_id,
+            message=f"✅ *Deal Updated Successfully*\n\n*Account:* {account_name}\n*Amount:* {new_amount}\n*Stage:* {new_stage}\n\n<https://app.crono.one/accounts/{account_id}|View in Crono>"
+        )
+
+        return jsonify({'response_action': 'clear'})
+
+    except Exception as e:
+        logger.error(f"❌ Error updating deal: {e}")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+
+        return jsonify({
+            'response_action': 'errors',
+            'errors': {'deal_amount_block': f'Error updating deal: {str(e)}'}
+        })
 
 
 @app.route('/api/settings', methods=['GET'])
