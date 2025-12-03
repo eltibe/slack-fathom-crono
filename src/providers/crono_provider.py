@@ -280,14 +280,10 @@ class CronoProvider(CRMProvider):
             Dict with 'id' (account_id) and 'created_at' if successful
         """
         try:
-            # Crono API v1 format
+            # Crono API v1 format - AccountId and description are mandatory
             payload = {
-                "data": {
-                    "description": content,
-                    "accountId": account_id,
-                    "opportunityId": None,
-                    "prospectIds": []
-                }
+                "AccountId": account_id,
+                "description": content
             }
 
             response = requests.post(
