@@ -80,7 +80,7 @@ Please provide:
     print("⏳ This may take a minute...\n")
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro-002')
+        model = genai.GenerativeModel('gemini-pro-latest')
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(

@@ -35,9 +35,9 @@ class AIGenerator:
             gemini_key = os.getenv('GEMINI_API_KEY')
             if gemini_key:
                 genai.configure(api_key=gemini_key)
-                self.gemini_client = genai.GenerativeModel('gemini-1.5-flash')
+                self.gemini_client = genai.GenerativeModel('gemini-pro-latest')
                 self.gemini_available = True
-                logger.info("✅ Gemini API initialized")
+                logger.info("✅ Gemini API initialized (using gemini-pro-latest)")
         except Exception as e:
             logger.warning(f"⚠️  Gemini API not available: {e}")
 

@@ -16,7 +16,7 @@ class GeminiEmailGenerator:
             raise ValueError("Gemini API key is required")
 
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.model = genai.GenerativeModel('gemini-pro-latest')
         self.crono_knowledge = self._load_knowledge_base(knowledge_base_path)
 
     def _load_knowledge_base(self, path: str) -> str:
