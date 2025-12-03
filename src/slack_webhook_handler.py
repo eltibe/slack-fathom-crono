@@ -1191,7 +1191,7 @@ def handle_create_crono_note(db, payload: Dict):
 
             if is_modal_action:
                 # Update modal with error
-                slack_client.views_update(
+                slack_client.client.views_update(
                     view_id=view_id,
                     view={
                         "type": "modal",
@@ -1226,7 +1226,7 @@ def handle_create_crono_note(db, payload: Dict):
             error_msg = "⚠️ No external attendees found. Cannot determine which Crono account to add note to."
 
             if is_modal_action:
-                slack_client.views_update(
+                slack_client.client.views_update(
                     view_id=view_id,
                     view={
                         "type": "modal",
@@ -1272,7 +1272,7 @@ def handle_create_crono_note(db, payload: Dict):
                 )
 
                 if not account:
-                    slack_client.views_update(
+                    slack_client.client.views_update(
                         view_id=view_id,
                         view={
                             "type": "modal",
@@ -1305,7 +1305,7 @@ def handle_create_crono_note(db, payload: Dict):
 
                 if note_id:
                     # Update modal with success
-                    slack_client.views_update(
+                    slack_client.client.views_update(
                         view_id=view_id,
                         view={
                             "type": "modal",
@@ -1342,7 +1342,7 @@ def handle_create_crono_note(db, payload: Dict):
 
             except Exception as e:
                 logger.error(f"❌ Error creating Crono note: {e}")
-                slack_client.views_update(
+                slack_client.client.views_update(
                     view_id=view_id,
                     view={
                         "type": "modal",
