@@ -925,35 +925,92 @@ def handle_create_gmail_draft(db, payload: Dict):
         slack_user_id = payload['user']['id']
         team_id = payload['team']['id']
 
-        logger.info(f"📧 Creating Gmail draft for recording {recording_id}...")
+        # Check if this action is from within a modal
+        is_modal_action = 'view' in payload
+        view_id = payload.get('view', {}).get('id') if is_modal_action else None
+
+        logger.info(f"📧 Creating Gmail draft for recording {recording_id}... (modal={is_modal_action})")
 
         # Retrieve stored meeting data
         if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
-            return jsonify({
-                "response_type": "ephemeral",
-                "replace_original": False,
-                "text": "❌ Meeting data not found. Please try processing the meeting again."
-            })
+
+            if is_modal_action:
+                slack_client.client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Error"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [{
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "❌ *Error*\n\nMeeting data not found. Please try processing the meeting again."
+                            }
+                        }]
+                    }
+                )
+                return jsonify({})
+            else:
+                return jsonify({
+                    "response_type": "ephemeral",
+                    "replace_original": False,
+                    "text": "❌ Meeting data not found. Please try processing the meeting again."
+                })
 
         state = get_conversation_state(db, recording_id)
         email_text = state['final_email']
         recipients = state['external_emails']
 
         if not recipients:
-            return jsonify({
-                "response_type": "ephemeral",
-                "replace_original": False,
-                "text": "⚠️ No external attendees found. Cannot create draft without recipients."
-            })
+            error_msg = "⚠️ No external attendees found. Cannot create draft without recipients."
+
+            if is_modal_action:
+                slack_client.client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Warning"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [{
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"⚠️ *Warning*\n\n{error_msg}"
+                            }
+                        }]
+                    }
+                )
+                return jsonify({})
+            else:
+                return jsonify({
+                    "response_type": "ephemeral",
+                    "replace_original": False,
+                    "text": error_msg
+                })
 
         # Get user and check Gmail token
         tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
         if not tenant:
-            return jsonify({
-                "response_type": "ephemeral",
-                "text": "❌ Tenant not found"
-            })
+            error_msg = "❌ Tenant not found"
+
+            if is_modal_action:
+                slack_client.client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Error"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [{
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": error_msg}
+                        }]
+                    }
+                )
+                return jsonify({})
+            else:
+                return jsonify({"response_type": "ephemeral", "text": error_msg})
 
         user = db.query(User).filter(
             User.slack_user_id == slack_user_id,
@@ -961,10 +1018,76 @@ def handle_create_gmail_draft(db, payload: Dict):
         ).first()
 
         if not user or not user.settings or not user.settings.gmail_token:
-            return jsonify({
-                "response_type": "ephemeral",
-                "text": "❌ Please connect your Google account first at https://slack-fathom-crono.onrender.com/settings"
-            })
+            error_msg = "❌ Please connect your Google account first at https://slack-fathom-crono.onrender.com/settings"
+
+            if is_modal_action:
+                slack_client.client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Error"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [{
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": error_msg}
+                        }]
+                    }
+                )
+                return jsonify({})
+            else:
+                return jsonify({"response_type": "ephemeral", "text": error_msg})
+
+        # If from modal, create draft synchronously and update modal
+        if is_modal_action:
+            try:
+                # Define callback to save refreshed tokens
+                def save_gmail_token(new_token_json):
+                    user.settings.gmail_token = new_token_json
+                    db.commit()
+                    logger.info(f"Refreshed Gmail token for user {slack_user_id}")
+
+                gmail = GmailDraftCreator(
+                    token_json=user.settings.gmail_token,
+                    token_save_callback=save_gmail_token
+                )
+                draft_id = gmail.create_draft_from_generated_email(
+                    email_text=email_text,
+                    to=recipients
+                )
+
+                if draft_id:
+                    # Update modal with success banner, preserving all fields and buttons
+                    current_view = payload.get('view', {})
+                    success_message = f"Gmail Draft Created! Recipients: {', '.join(recipients)}"
+                    updated_view = update_modal_with_success(
+                        view=current_view,
+                        completed_action_id='create_gmail_draft_from_modal',
+                        success_message=success_message,
+                        action_link="https://mail.google.com/mail/u/0/#drafts"
+                    )
+                    slack_client.client.views_update(view_id=view_id, view=updated_view)
+                    return jsonify({})
+                else:
+                    raise Exception("Failed to create Gmail draft")
+
+            except Exception as e:
+                logger.error(f"❌ Error creating Gmail draft: {e}")
+                slack_client.client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Error"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [{
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"❌ *Error Creating Draft*\n\n{str(e)}"
+                            }
+                        }]
+                    }
+                )
+                return jsonify({})
 
         # Process in background (Gmail API can be slow)
         import threading
@@ -1169,114 +1292,76 @@ def handle_create_calendar_event(db, payload: Dict):
         })
 
 
-def build_actions_modal(recording_id: str, success_message: str, action_link: str = None, action_link_text: str = None):
+def update_modal_with_success(view: Dict, completed_action_id: str, success_message: str, action_link: str = None) -> Dict:
     """
-    Build a modal view with success message and remaining action buttons.
+    Update an existing modal view to show success message and mark action as completed.
+
+    This preserves all existing blocks and input values, just adds a success banner
+    and updates the clicked button to show it's completed.
 
     Args:
-        recording_id: Recording ID for button values
-        success_message: Success message to display at top (markdown format)
-        action_link: Optional URL for primary action button
-        action_link_text: Text for primary action button
+        view: The current view dict from payload['view']
+        completed_action_id: The action_id of the button that was clicked
+        success_message: Success message to show in banner (without emoji, will add ✅)
+        action_link: Optional link to the created resource
 
     Returns:
-        Dict representing modal view structure
+        Updated view dict
     """
-    blocks = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": success_message
-            }
+    import copy
+
+    # Deep copy to avoid modifying original
+    updated_view = copy.deepcopy(view)
+    blocks = updated_view.get('blocks', [])
+
+    # Create success banner
+    success_block = {
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"✅ {success_message}"
         }
-    ]
-
-    # Add action link button if provided
-    if action_link and action_link_text:
-        blocks.append({
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": action_link_text
-                    },
-                    "url": action_link,
-                    "style": "primary"
-                }
-            ]
-        })
-
-    # Add divider and remaining actions
-    blocks.extend([
-        {
-            "type": "divider"
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "*Other Actions:*"
-            }
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Create Note"
-                    },
-                    "style": "primary",
-                    "action_id": "create_crono_note",
-                    "value": recording_id
-                },
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Create Task"
-                    },
-                    "style": "primary",
-                    "action_id": "create_crono_task",
-                    "value": recording_id
-                }
-            ]
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Create Gmail Draft"
-                    },
-                    "action_id": "create_gmail_draft",
-                    "value": recording_id
-                },
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Create Calendar Event"
-                    },
-                    "action_id": "create_calendar_event",
-                    "value": recording_id
-                }
-            ]
-        }
-    ])
-
-    return {
-        "type": "modal",
-        "title": {"type": "plain_text", "text": "Meeting Actions"},
-        "close": {"type": "plain_text", "text": "Close"},
-        "blocks": blocks
     }
+
+    # Add link as accessory button if provided
+    if action_link:
+        success_block["accessory"] = {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "View"},
+            "url": action_link
+        }
+
+    # Find the right position to insert success banner
+    # Insert after header if exists, otherwise at the top
+    insert_position = 0
+    if blocks and blocks[0].get('type') == 'header':
+        insert_position = 1
+
+    # Remove any existing success banners first (to avoid duplicates)
+    blocks = [b for b in blocks if not (b.get('type') == 'section' and '✅' in b.get('text', {}).get('text', ''))]
+
+    # Insert success banner
+    blocks.insert(insert_position, success_block)
+
+    # Find and update the completed button in action blocks
+    for block in blocks:
+        if block.get('type') == 'actions':
+            elements = block.get('elements', [])
+            for element in elements:
+                if element.get('action_id') == completed_action_id:
+                    # Mark button as completed
+                    original_text = element['text']['text']
+                    # Remove emoji if present and add checkmark
+                    clean_text = original_text.replace('📧', '').replace('📅', '').replace('📝', '').replace('✅', '').replace('👁️', '').strip()
+                    element['text']['text'] = f"✅ {clean_text}"
+                    # Change action_id to prevent re-triggering
+                    element['action_id'] = f"{completed_action_id}_completed"
+                    # Keep the style if it exists
+                    if 'style' not in element:
+                        element['style'] = 'primary'
+
+    updated_view['blocks'] = blocks
+    return updated_view
 
 
 def handle_create_crono_note(db, payload: Dict):
@@ -1414,15 +1499,16 @@ def handle_create_crono_note(db, payload: Dict):
                 )
 
                 if note_id:
-                    # Update modal with success message and remaining actions
-                    success_message = f"✅ *Crono Note Created!*\n\n*Account:* {account_name}\n*Meeting:* {meeting_title}"
-                    modal_view = build_actions_modal(
-                        recording_id=recording_id,
+                    # Update modal with success banner, preserving all fields and buttons
+                    current_view = payload.get('view', {})
+                    success_message = f"Crono Note Created! Account: {account_name}"
+                    updated_view = update_modal_with_success(
+                        view=current_view,
+                        completed_action_id='push_note_to_crono_from_modal',
                         success_message=success_message,
-                        action_link=crono_url,
-                        action_link_text="🔗 Open in Crono"
+                        action_link=crono_url
                     )
-                    slack_client.client.views_update(view_id=view_id, view=modal_view)
+                    slack_client.client.views_update(view_id=view_id, view=updated_view)
                     return jsonify({})
                 else:
                     raise Exception("Failed to create note")
