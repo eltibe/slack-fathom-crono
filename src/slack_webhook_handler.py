@@ -1179,16 +1179,42 @@ def handle_create_crono_note(db, payload: Dict):
         recording_id = payload['actions'][0]['value']
         response_url = payload.get('response_url')
 
-        logger.info(f"📝 Creating Crono note for recording {recording_id}...")
+        # Check if this action is from within a modal
+        is_modal_action = 'view' in payload
+        view_id = payload.get('view', {}).get('id') if is_modal_action else None
+
+        logger.info(f"📝 Creating Crono note for recording {recording_id}... (modal={is_modal_action})")
 
         # Retrieve stored meeting data
         if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
-            return jsonify({
-                "response_type": "ephemeral",
-                "replace_original": False,
-                "text": "❌ Meeting data not found. Please try processing the meeting again."
-            })
+
+            if is_modal_action:
+                # Update modal with error
+                slack_client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Error"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": "❌ *Error*\n\nMeeting data not found. Please try processing the meeting again."
+                                }
+                            }
+                        ]
+                    }
+                )
+                return jsonify({})
+            else:
+                return jsonify({
+                    "response_type": "ephemeral",
+                    "replace_original": False,
+                    "text": "❌ Meeting data not found. Please try processing the meeting again."
+                })
 
         state = get_conversation_state(db, recording_id)
         meeting_title = state['meeting_title']
@@ -1197,13 +1223,145 @@ def handle_create_crono_note(db, payload: Dict):
         external_emails = state['external_emails']
 
         if not external_emails:
-            return jsonify({
-                "response_type": "ephemeral",
-                "replace_original": False,
-                "text": "⚠️ No external attendees found. Cannot determine which Crono account to add note to."
-            })
+            error_msg = "⚠️ No external attendees found. Cannot determine which Crono account to add note to."
 
-        # Process in background (Crono API can be slow)
+            if is_modal_action:
+                slack_client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Warning"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"⚠️ *Warning*\n\n{error_msg}"
+                                }
+                            }
+                        ]
+                    }
+                )
+                return jsonify({})
+            else:
+                return jsonify({
+                    "response_type": "ephemeral",
+                    "replace_original": False,
+                    "text": error_msg
+                })
+
+        # If from modal, create note synchronously and update modal
+        if is_modal_action:
+            try:
+                # Create note synchronously
+                crm_type = os.getenv('CRM_PROVIDER', 'crono')
+                credentials = {
+                    'public_key': os.getenv('CRONO_PUBLIC_KEY'),
+                    'private_key': os.getenv('CRONO_API_KEY')
+                }
+                crm_provider = CRMProviderFactory.create(crm_type, credentials)
+
+                # Find account
+                email_domain = external_emails[0].split('@')[-1]
+                company_name_raw = email_domain.split('.')[0]
+
+                account = crm_provider.find_account_by_domain(
+                    email_domain=email_domain,
+                    company_name=company_name_raw
+                )
+
+                if not account:
+                    slack_client.views_update(
+                        view_id=view_id,
+                        view={
+                            "type": "modal",
+                            "title": {"type": "plain_text", "text": "Not Found"},
+                            "close": {"type": "plain_text", "text": "Close"},
+                            "blocks": [
+                                {
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": f"⚠️ *Account Not Found*\n\nNo Crono account found for domain '{email_domain}'.\n\nPlease create the account in Crono first, then try again."
+                                    }
+                                }
+                            ]
+                        }
+                    )
+                    return jsonify({})
+
+                account_id = account.get('objectId') or account.get('id')
+                account_name = account.get('name', 'Unknown')
+                crono_url = f"https://app.crono.one/accounts/{account_id}"
+
+                # Create note
+                note_id = crm_provider.create_meeting_summary(
+                    account_id=account_id,
+                    meeting_title=meeting_title,
+                    summary_data=sales_data,
+                    meeting_url=meeting_url
+                )
+
+                if note_id:
+                    # Update modal with success
+                    slack_client.views_update(
+                        view_id=view_id,
+                        view={
+                            "type": "modal",
+                            "title": {"type": "plain_text", "text": "Success!"},
+                            "close": {"type": "plain_text", "text": "Close"},
+                            "blocks": [
+                                {
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": f"✅ *Crono Note Created Successfully!*\n\n*Account:* {account_name}\n*Meeting:* {meeting_title}"
+                                    }
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {
+                                            "type": "button",
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": "🔗 Open in Crono CRM"
+                                            },
+                                            "url": crono_url,
+                                            "style": "primary"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    )
+                    return jsonify({})
+                else:
+                    raise Exception("Failed to create note")
+
+            except Exception as e:
+                logger.error(f"❌ Error creating Crono note: {e}")
+                slack_client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Error"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"❌ *Error Creating Note*\n\n{str(e)}"
+                                }
+                            }
+                        ]
+                    }
+                )
+                return jsonify({})
+
+        # If not from modal, process in background (Crono API can be slow)
         import threading
 
         def create_note_in_background():
