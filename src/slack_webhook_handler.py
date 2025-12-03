@@ -1193,7 +1193,7 @@ def handle_create_crono_note(db, payload: Dict):
         state = get_conversation_state(db, recording_id)
         meeting_title = state['meeting_title']
         sales_data = state.get('sales_data', {})  # Use empty dict if not present
-        meeting_url = state['meeting_url']
+        meeting_url = state.get('meeting_url', '')  # Use empty string if not present
         external_emails = state['external_emails']
 
         if not external_emails:
