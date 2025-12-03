@@ -1037,57 +1037,70 @@ def handle_create_gmail_draft(db, payload: Dict):
             else:
                 return jsonify({"response_type": "ephemeral", "text": error_msg})
 
-        # If from modal, create draft synchronously and update modal
+        # If from modal, create draft in background and update modal
         if is_modal_action:
-            try:
-                # Define callback to save refreshed tokens
-                def save_gmail_token(new_token_json):
-                    user.settings.gmail_token = new_token_json
-                    db.commit()
-                    logger.info(f"Refreshed Gmail token for user {slack_user_id}")
+            import threading
 
-                gmail = GmailDraftCreator(
-                    token_json=user.settings.gmail_token,
-                    token_save_callback=save_gmail_token
-                )
-                draft_id = gmail.create_draft_from_generated_email(
-                    email_text=email_text,
-                    to=recipients
-                )
+            def create_draft_and_update_modal():
+                try:
+                    logger.info(f"🔄 Creating Gmail draft in background for modal...")
 
-                if draft_id:
-                    # Update modal with success banner, preserving all fields and buttons
-                    current_view = payload.get('view', {})
-                    success_message = f"Gmail Draft Created! Recipients: {', '.join(recipients)}"
-                    updated_view = update_modal_with_success(
-                        view=current_view,
-                        completed_action_id='create_gmail_draft_from_modal',
-                        success_message=success_message,
-                        action_link="https://mail.google.com/mail/u/0/#drafts"
+                    # Define callback to save refreshed tokens
+                    def save_gmail_token(new_token_json):
+                        user.settings.gmail_token = new_token_json
+                        db.commit()
+                        logger.info(f"Refreshed Gmail token for user {slack_user_id}")
+
+                    gmail = GmailDraftCreator(
+                        token_json=user.settings.gmail_token,
+                        token_save_callback=save_gmail_token
                     )
-                    slack_client.client.views_update(view_id=view_id, view=updated_view)
-                    return jsonify({})
-                else:
-                    raise Exception("Failed to create Gmail draft")
+                    draft_id = gmail.create_draft_from_generated_email(
+                        email_text=email_text,
+                        to=recipients
+                    )
 
-            except Exception as e:
-                logger.error(f"❌ Error creating Gmail draft: {e}")
-                slack_client.client.views_update(
-                    view_id=view_id,
-                    view={
-                        "type": "modal",
-                        "title": {"type": "plain_text", "text": "Error"},
-                        "close": {"type": "plain_text", "text": "Close"},
-                        "blocks": [{
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"❌ *Error Creating Draft*\n\n{str(e)}"
-                            }
-                        }]
-                    }
-                )
-                return jsonify({})
+                    if draft_id:
+                        # Update modal with success banner, preserving all fields and buttons
+                        current_view = payload.get('view', {})
+                        success_message = f"Gmail Draft Created! Recipients: {', '.join(recipients)}"
+                        updated_view = update_modal_with_success(
+                            view=current_view,
+                            completed_action_id='create_gmail_draft_from_modal',
+                            success_message=success_message,
+                            action_link="https://mail.google.com/mail/u/0/#drafts"
+                        )
+                        slack_client.client.views_update(view_id=view_id, view=updated_view)
+                    else:
+                        raise Exception("Failed to create Gmail draft")
+
+                except Exception as e:
+                    logger.error(f"❌ Error creating Gmail draft: {e}")
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+
+                    slack_client.client.views_update(
+                        view_id=view_id,
+                        view={
+                            "type": "modal",
+                            "title": {"type": "plain_text", "text": "Error"},
+                            "close": {"type": "plain_text", "text": "Close"},
+                            "blocks": [{
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"❌ *Error Creating Draft*\n\n{str(e)}"
+                                }
+                            }]
+                        }
+                    )
+
+            # Start background thread
+            thread = threading.Thread(target=create_draft_and_update_modal)
+            thread.start()
+
+            # Return immediate acknowledgment to avoid 3-second timeout
+            return jsonify({})
 
         # Process in background (Gmail API can be slow)
         import threading
@@ -1457,93 +1470,106 @@ def handle_create_crono_note(db, payload: Dict):
                     "text": error_msg
                 })
 
-        # If from modal, create note synchronously and update modal
+        # If from modal, create note in background and update modal
         if is_modal_action:
-            try:
-                # Create note synchronously
-                crm_type = os.getenv('CRM_PROVIDER', 'crono')
-                credentials = {
-                    'public_key': os.getenv('CRONO_PUBLIC_KEY'),
-                    'private_key': os.getenv('CRONO_API_KEY')
-                }
-                crm_provider = CRMProviderFactory.create(crm_type, credentials)
+            import threading
 
-                # Find account
-                email_domain = external_emails[0].split('@')[-1]
-                company_name_raw = email_domain.split('.')[0]
+            def create_note_and_update_modal():
+                try:
+                    logger.info(f"🔄 Creating Crono note in background for modal...")
 
-                account = crm_provider.find_account_by_domain(
-                    email_domain=email_domain,
-                    company_name=company_name_raw
-                )
+                    # Create note
+                    crm_type = os.getenv('CRM_PROVIDER', 'crono')
+                    credentials = {
+                        'public_key': os.getenv('CRONO_PUBLIC_KEY'),
+                        'private_key': os.getenv('CRONO_API_KEY')
+                    }
+                    crm_provider = CRMProviderFactory.create(crm_type, credentials)
 
-                if not account:
+                    # Find account
+                    email_domain = external_emails[0].split('@')[-1]
+                    company_name_raw = email_domain.split('.')[0]
+
+                    account = crm_provider.find_account_by_domain(
+                        email_domain=email_domain,
+                        company_name=company_name_raw
+                    )
+
+                    if not account:
+                        slack_client.client.views_update(
+                            view_id=view_id,
+                            view={
+                                "type": "modal",
+                                "title": {"type": "plain_text", "text": "Not Found"},
+                                "close": {"type": "plain_text", "text": "Close"},
+                                "blocks": [
+                                    {
+                                        "type": "section",
+                                        "text": {
+                                            "type": "mrkdwn",
+                                            "text": f"⚠️ *Account Not Found*\n\nNo Crono account found for domain '{email_domain}'.\n\nPlease create the account in Crono first, then try again."
+                                        }
+                                    }
+                                ]
+                            }
+                        )
+                        return
+
+                    account_id = account.get('objectId') or account.get('id')
+                    account_name = account.get('name', 'Unknown')
+                    crono_url = f"https://app.crono.one/accounts/{account_id}"
+
+                    # Create note
+                    note_id = crm_provider.create_meeting_summary(
+                        account_id=account_id,
+                        meeting_title=meeting_title,
+                        summary_data=sales_data,
+                        meeting_url=meeting_url
+                    )
+
+                    if note_id:
+                        # Update modal with success banner, preserving all fields and buttons
+                        current_view = payload.get('view', {})
+                        success_message = f"Crono Note Created! Account: {account_name}"
+                        updated_view = update_modal_with_success(
+                            view=current_view,
+                            completed_action_id='push_note_to_crono_from_modal',
+                            success_message=success_message,
+                            action_link=crono_url
+                        )
+                        slack_client.client.views_update(view_id=view_id, view=updated_view)
+                    else:
+                        raise Exception("Failed to create note")
+
+                except Exception as e:
+                    logger.error(f"❌ Error creating Crono note: {e}")
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+
                     slack_client.client.views_update(
                         view_id=view_id,
                         view={
                             "type": "modal",
-                            "title": {"type": "plain_text", "text": "Not Found"},
+                            "title": {"type": "plain_text", "text": "Error"},
                             "close": {"type": "plain_text", "text": "Close"},
                             "blocks": [
                                 {
                                     "type": "section",
                                     "text": {
                                         "type": "mrkdwn",
-                                        "text": f"⚠️ *Account Not Found*\n\nNo Crono account found for domain '{email_domain}'.\n\nPlease create the account in Crono first, then try again."
+                                        "text": f"❌ *Error Creating Note*\n\n{str(e)}"
                                     }
                                 }
                             ]
                         }
                     )
-                    return jsonify({})
 
-                account_id = account.get('objectId') or account.get('id')
-                account_name = account.get('name', 'Unknown')
-                crono_url = f"https://app.crono.one/accounts/{account_id}"
+            # Start background thread
+            thread = threading.Thread(target=create_note_and_update_modal)
+            thread.start()
 
-                # Create note
-                note_id = crm_provider.create_meeting_summary(
-                    account_id=account_id,
-                    meeting_title=meeting_title,
-                    summary_data=sales_data,
-                    meeting_url=meeting_url
-                )
-
-                if note_id:
-                    # Update modal with success banner, preserving all fields and buttons
-                    current_view = payload.get('view', {})
-                    success_message = f"Crono Note Created! Account: {account_name}"
-                    updated_view = update_modal_with_success(
-                        view=current_view,
-                        completed_action_id='push_note_to_crono_from_modal',
-                        success_message=success_message,
-                        action_link=crono_url
-                    )
-                    slack_client.client.views_update(view_id=view_id, view=updated_view)
-                    return jsonify({})
-                else:
-                    raise Exception("Failed to create note")
-
-            except Exception as e:
-                logger.error(f"❌ Error creating Crono note: {e}")
-                slack_client.client.views_update(
-                    view_id=view_id,
-                    view={
-                        "type": "modal",
-                        "title": {"type": "plain_text", "text": "Error"},
-                        "close": {"type": "plain_text", "text": "Close"},
-                        "blocks": [
-                            {
-                                "type": "section",
-                                "text": {
-                                    "type": "mrkdwn",
-                                    "text": f"❌ *Error Creating Note*\n\n{str(e)}"
-                                }
-                            }
-                        ]
-                    }
-                )
-                return jsonify({})
+            # Return immediate acknowledgment to avoid 3-second timeout
+            return jsonify({})
 
         # If not from modal, process in background (Crono API can be slow)
         import threading
