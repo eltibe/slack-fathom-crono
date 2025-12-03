@@ -37,6 +37,7 @@ from src.database import get_db
 from src.models import User
 from src.models.tenant import Tenant
 from src.models.user_settings import UserSettings
+from src.models.conversation_state import ConversationState
 
 # Load environment variables
 load_dotenv()
@@ -79,9 +80,73 @@ slack_web_client = WebClient(token=os.getenv('SLACK_BOT_TOKEN'), ssl=ssl_context
 # Signature verifier for security
 signature_verifier = SignatureVerifier(os.getenv('SLACK_SIGNING_SECRET'))
 
-# In-memory state storage (in production, use Redis or database)
-# Format: {thread_ts: {channel, selected_actions, meeting_data, awaiting_confirmation}}
-conversation_state = {}
+# Database-backed conversation state functions
+def get_conversation_state(db, state_key: str) -> Optional[Dict]:
+    """Get conversation state from database"""
+    try:
+        state = db.query(ConversationState).filter(
+            ConversationState.state_key == state_key
+        ).first()
+
+        if state:
+            logger.info(f"✅ Found conversation state for key: {state_key}")
+            return state.state_data
+        else:
+            logger.warning(f"❌ No data found for recording {state_key}")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting conversation state: {e}")
+        return None
+
+
+def set_conversation_state(db, state_key: str, state_data: Dict) -> bool:
+    """Set conversation state in database"""
+    try:
+        # Check if state already exists
+        state = db.query(ConversationState).filter(
+            ConversationState.state_key == state_key
+        ).first()
+
+        if state:
+            # Update existing state
+            state.state_data = state_data
+            state.updated_at = datetime.utcnow()
+        else:
+            # Create new state
+            state = ConversationState(
+                state_key=state_key,
+                state_data=state_data,
+                expires_at=datetime.utcnow() + timedelta(hours=24)
+            )
+            db.add(state)
+
+        db.commit()
+        logger.info(f"✅ Saved conversation state for key: {state_key}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting conversation state: {e}")
+        db.rollback()
+        return False
+
+
+def delete_conversation_state(db, state_key: str) -> bool:
+    """Delete conversation state from database"""
+    try:
+        state = db.query(ConversationState).filter(
+            ConversationState.state_key == state_key
+        ).first()
+
+        if state:
+            db.delete(state)
+            db.commit()
+            logger.info(f"✅ Deleted conversation state for key: {state_key}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error deleting conversation state: {e}")
+        db.rollback()
+        return False
+
 
 # Global cache for storing selected account IDs by view_id
 # Format: {view_id: account_id}
@@ -367,64 +432,69 @@ def slack_commands():
 def slack_interactions():
     """Handle Slack interactive components (buttons, checkboxes, etc.)."""
 
-    # Verify the request is from Slack
-    if not verify_slack_request(request):
-        return jsonify({'error': 'Invalid signature'}), 403
+    # Get database session
+    db = next(get_db())
+    try:
+        # Verify the request is from Slack
+        if not verify_slack_request(request):
+            return jsonify({'error': 'Invalid signature'}), 403
 
-    # Parse the payload
-    payload = json.loads(request.form.get('payload'))
+        # Parse the payload
+        payload = json.loads(request.form.get('payload'))
 
-    interaction_type = payload.get('type')
+        interaction_type = payload.get('type')
 
-    if interaction_type == 'block_actions':
-        actions = payload.get('actions', [])
+        if interaction_type == 'block_actions':
+            actions = payload.get('actions', [])
 
-        for action in actions:
-            action_id = action.get('action_id')
+            for action in actions:
+                action_id = action.get('action_id')
 
-            if action_id == 'execute_button':
-                handle_execute_button(payload)
-            elif action_id == 'cancel_button':
-                handle_cancel_button(payload)
-            elif action_id == 'select_meeting':
-                # Just acknowledge - selection is stored in state
-                pass
-            elif action_id == 'process_meeting_button':
-                return handle_process_meeting_button(payload)
-            elif action_id == 'create_gmail_draft':
-                return handle_create_gmail_draft(payload)
-            elif action_id == 'create_calendar_event':
-                return handle_create_calendar_event(payload)
-            elif action_id == 'create_crono_note':
-                return handle_create_crono_note(payload)
-            elif action_id == 'view_crono_deals':
-                return handle_view_crono_deals(payload)
-            elif action_id == 'load_previous_meetings':
-                return handle_load_previous_meetings(payload)
-            elif action_id == 'create_gmail_draft_from_modal':
-                return handle_create_gmail_draft_from_modal(payload)
-            elif action_id == 'create_calendar_event_from_modal':
-                return handle_create_calendar_event_from_modal(payload)
-            elif action_id == 'push_note_to_crono_from_modal':
-                return handle_push_note_to_crono_from_modal(payload)
-            elif action_id == 'view_crono_deals_from_modal':
-                return handle_view_crono_deals_from_modal(payload)
-            elif action_id == 'create_crono_task_from_modal':
-                return handle_create_crono_task_from_modal(payload)
-            elif action_id == 'open_followup_edit_modal':
-                return handle_open_followup_edit_modal(payload)
+                if action_id == 'execute_button':
+                    handle_execute_button(db, payload)
+                elif action_id == 'cancel_button':
+                    handle_cancel_button(db, payload)
+                elif action_id == 'select_meeting':
+                    # Just acknowledge - selection is stored in state
+                    pass
+                elif action_id == 'process_meeting_button':
+                    return handle_process_meeting_button(db, payload)
+                elif action_id == 'create_gmail_draft':
+                    return handle_create_gmail_draft(db, payload)
+                elif action_id == 'create_calendar_event':
+                    return handle_create_calendar_event(db, payload)
+                elif action_id == 'create_crono_note':
+                    return handle_create_crono_note(db, payload)
+                elif action_id == 'view_crono_deals':
+                    return handle_view_crono_deals(db, payload)
+                elif action_id == 'load_previous_meetings':
+                    return handle_load_previous_meetings(db, payload)
+                elif action_id == 'create_gmail_draft_from_modal':
+                    return handle_create_gmail_draft_from_modal(db, payload)
+                elif action_id == 'create_calendar_event_from_modal':
+                    return handle_create_calendar_event_from_modal(db, payload)
+                elif action_id == 'push_note_to_crono_from_modal':
+                    return handle_push_note_to_crono_from_modal(db, payload)
+                elif action_id == 'view_crono_deals_from_modal':
+                    return handle_view_crono_deals_from_modal(db, payload)
+                elif action_id == 'create_crono_task_from_modal':
+                    return handle_create_crono_task_from_modal(db, payload)
+                elif action_id == 'open_followup_edit_modal':
+                    return handle_open_followup_edit_modal(db, payload)
 
-    elif interaction_type == 'block_suggestion':
-        return handle_block_suggestion(payload)
+        elif interaction_type == 'block_suggestion':
+            return handle_block_suggestion(db, payload)
 
-    elif interaction_type == 'view_submission':
-        callback_id = payload.get('view', {}).get('callback_id')
-        if callback_id == 'crono_task_modal':
-            return handle_crono_task_submission(payload)
-        elif callback_id == 'followup_meeting_select_modal':
-            return handle_followup_meeting_submission(payload)
+        elif interaction_type == 'view_submission':
+            callback_id = payload.get('view', {}).get('callback_id')
+            if callback_id == 'crono_task_modal':
+                return handle_crono_task_submission(db, payload)
+            elif callback_id == 'followup_meeting_select_modal':
+                return handle_followup_meeting_submission(db, payload)
 
-    return jsonify({'status': 'ok'})
+        return jsonify({'status': 'ok'})
+    finally:
+        db.close()
 
 
 def verify_slack_request(request) -> bool:
@@ -440,7 +510,7 @@ def verify_slack_request(request) -> bool:
         return False
 
 
-def handle_execute_button(payload: Dict):
+def handle_execute_button(db, payload: Dict):
     """Handle when user clicks 'Execute Selected Actions' button."""
 
     user = payload['user']
@@ -474,13 +544,13 @@ def handle_execute_button(payload: Dict):
         return
 
     # Store conversation state
-    conversation_state[message_ts] = {
+    set_conversation_state(db, message_ts, {
         'channel': channel,
         'selected_actions': selected_actions,
         'user_id': user['id'],
         'awaiting_confirmation': True,
         'meeting_data': payload.get('message', {}).get('metadata', {}).get('event_payload', {})
-    }
+    })
 
     # Send confirmation request
     slack_client.send_confirmation_request(
@@ -490,15 +560,15 @@ def handle_execute_button(payload: Dict):
     )
 
 
-def handle_cancel_button(payload: Dict):
+def handle_cancel_button(db, payload: Dict):
     """Handle when user clicks 'Cancel' button."""
 
     channel = payload['container']['channel_id']
     message_ts = payload['container']['message_ts']
 
     # Clean up state
-    if message_ts in conversation_state:
-        del conversation_state[message_ts]
+    if get_conversation_state(db, message_ts):
+        delete_conversation_state(db, message_ts)
 
     # Send cancellation message
     slack_client.send_cancellation_message(
@@ -507,7 +577,7 @@ def handle_cancel_button(payload: Dict):
     )
 
 
-def handle_process_meeting_button(payload: Dict):
+def handle_process_meeting_button(db, payload: Dict):
     """Handle when user clicks 'Generate Follow-up' button after selecting a meeting."""
 
     user = payload['user']
@@ -537,7 +607,7 @@ def handle_process_meeting_button(payload: Dict):
     import threading
     thread = threading.Thread(
         target=process_selected_meeting,
-        args=(selected_recording_id, channel, user['id'], response_url)
+        args=(selected_recording_id, channel, user['id'], response_url, db)
     )
     thread.start()
 
@@ -549,7 +619,7 @@ def handle_process_meeting_button(payload: Dict):
     })
 
 
-def process_selected_meeting(recording_id: str, channel: str, user_id: str, response_url: str = None):
+def process_selected_meeting(recording_id: str, channel: str, user_id: str, response_url: str = None, db = None):
     """
     Process a selected meeting (run in background thread).
 
@@ -558,9 +628,14 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
         channel: Slack channel to send results to
         user_id: Slack user ID who requested
         response_url: Slack response URL for updates
+        db: Database session (optional, will create new one if None)
     """
     import sys
     import requests
+
+    # ASSUMPTION: Create new db session if not provided (for background threads)
+    if db is None:
+        db = next(get_db())
 
     try:
         logger.info(f"🔄 Processing meeting {recording_id}...")
@@ -625,8 +700,8 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
 
         logger.info(f"✅ Successfully processed meeting: {meeting_title}")
 
-        # Store processed data in conversation state for button handlers
-        conversation_state[recording_id] = {
+        # Store processed data in database for button handlers
+        set_conversation_state(db, recording_id, {
             'meeting_title': meeting_title,
             'final_email': final_email,
             'meeting_summary': meeting_summary,
@@ -637,7 +712,7 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
             'transcript': transcript,  # Needed for date extraction in calendar events
             'channel': channel,
             'user_id': user_id
-        }
+        })
 
         # Send interactive message with actions via response_url
         if response_url:
@@ -799,7 +874,7 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
             }, timeout=5)
 
 
-def handle_create_gmail_draft(payload: Dict):
+def handle_create_gmail_draft(db, payload: Dict):
     """Handle when user clicks 'Create Gmail Draft' button."""
     import sys
     import requests
@@ -812,7 +887,7 @@ def handle_create_gmail_draft(payload: Dict):
         logger.info(f"📧 Creating Gmail draft for recording {recording_id}...")
 
         # Retrieve stored meeting data
-        if recording_id not in conversation_state:
+        if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
@@ -820,7 +895,7 @@ def handle_create_gmail_draft(payload: Dict):
                 "text": "❌ Meeting data not found. Please try processing the meeting again."
             })
 
-        state = conversation_state[recording_id]
+        state = get_conversation_state(db, recording_id)
         email_text = state['final_email']
         recipients = state['external_emails']
 
@@ -895,7 +970,7 @@ def handle_create_gmail_draft(payload: Dict):
         })
 
 
-def handle_create_calendar_event(payload: Dict):
+def handle_create_calendar_event(db, payload: Dict):
     """Handle when user clicks 'Create Calendar Event' button."""
     import sys
     import requests
@@ -910,7 +985,7 @@ def handle_create_calendar_event(payload: Dict):
         logger.info(f"📅 Creating calendar event for recording {recording_id}...")
 
         # Retrieve stored meeting data
-        if recording_id not in conversation_state:
+        if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
@@ -918,7 +993,7 @@ def handle_create_calendar_event(payload: Dict):
                 "text": "❌ Meeting data not found. Please try processing the meeting again."
             })
 
-        state = conversation_state[recording_id]
+        state = get_conversation_state(db, recording_id)
         meeting_title = state['meeting_title']
         meeting_summary = state['meeting_summary']
         recipients = state['external_emails']
@@ -1025,7 +1100,7 @@ def handle_create_calendar_event(payload: Dict):
         })
 
 
-def handle_create_crono_note(payload: Dict):
+def handle_create_crono_note(db, payload: Dict):
     """Handle when user clicks 'Create Crono Note' button."""
     import sys
     import requests
@@ -1038,7 +1113,7 @@ def handle_create_crono_note(payload: Dict):
         logger.info(f"📝 Creating Crono note for recording {recording_id}...")
 
         # Retrieve stored meeting data
-        if recording_id not in conversation_state:
+        if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
@@ -1046,7 +1121,7 @@ def handle_create_crono_note(payload: Dict):
                 "text": "❌ Meeting data not found. Please try processing the meeting again."
             })
 
-        state = conversation_state[recording_id]
+        state = get_conversation_state(db, recording_id)
         meeting_title = state['meeting_title']
         sales_data = state['sales_data']
         meeting_url = state['meeting_url']
@@ -1210,7 +1285,7 @@ def handle_create_crono_note(payload: Dict):
         })
 
 
-def handle_load_previous_meetings(payload: Dict):
+def handle_load_previous_meetings(db, payload: Dict):
     """Handle when user clicks 'Load Previous Meetings' button in modal."""
     import sys
 
@@ -1288,7 +1363,7 @@ def handle_load_previous_meetings(payload: Dict):
         })
 
 
-def handle_open_followup_edit_modal(payload: Dict):
+def handle_open_followup_edit_modal(db, payload: Dict):
     """Handle when user clicks 'View & Edit' button to open modal with editable fields."""
     import sys
 
@@ -1300,7 +1375,7 @@ def handle_open_followup_edit_modal(payload: Dict):
         logger.info(f"📝 Opening follow-up edit modal for recording {recording_id}...")
 
         # Retrieve stored meeting data from conversation state
-        if recording_id not in conversation_state:
+        if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 'status': 'error',
@@ -1308,7 +1383,7 @@ def handle_open_followup_edit_modal(payload: Dict):
             })
 
         # Get data from conversation state
-        state = conversation_state[recording_id]
+        state = get_conversation_state(db, recording_id)
         meeting_title = state.get('meeting_title', 'Meeting')
         meeting_summary = state.get('meeting_summary', '')
         final_email = state.get('final_email', '')
@@ -1486,7 +1561,7 @@ def handle_open_followup_edit_modal(payload: Dict):
         })
 
 
-def handle_view_crono_deals(payload: Dict):
+def handle_view_crono_deals(db, payload: Dict):
     """Handle when user clicks 'View Crono Deals' button."""
     import sys
     import requests
@@ -1499,7 +1574,7 @@ def handle_view_crono_deals(payload: Dict):
         logger.info(f"💰 Viewing Crono deals for recording {recording_id}...")
 
         # Retrieve stored meeting data
-        if recording_id not in conversation_state:
+        if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
             return jsonify({
                 "response_type": "ephemeral",
@@ -1507,7 +1582,7 @@ def handle_view_crono_deals(payload: Dict):
                 "text": "❌ Meeting data not found. Please try processing the meeting again."
             })
 
-        state = conversation_state[recording_id]
+        state = get_conversation_state(db, recording_id)
         external_emails = state['external_emails']
 
         if not external_emails:
@@ -1683,10 +1758,10 @@ def handle_user_message(event: Dict):
     thread_ts = event.get('thread_ts')
 
     # Only process messages in threads we're tracking
-    if not thread_ts or thread_ts not in conversation_state:
+    if not thread_ts or not get_conversation_state(db, thread_ts):
         return
 
-    state = conversation_state[thread_ts]
+    state = get_conversation_state(db, thread_ts)
 
     # Check if we're awaiting confirmation
     if not state.get('awaiting_confirmation'):
@@ -1706,7 +1781,7 @@ def handle_user_message(event: Dict):
             thread_ts=thread_ts
         )
         # Clean up state
-        del conversation_state[thread_ts]
+        delete_conversation_state(db, thread_ts)
 
 
 def execute_selected_actions(thread_ts: str, state: Dict):
@@ -1807,48 +1882,48 @@ def execute_selected_actions(thread_ts: str, state: Dict):
     )
 
     # Clean up state
-    if thread_ts in conversation_state:
-        del conversation_state[thread_ts]
+    if get_conversation_state(db, thread_ts):
+        delete_conversation_state(db, thread_ts)
 
 
-def handle_create_gmail_draft_from_modal(payload: Dict):
+def handle_create_gmail_draft_from_modal(db, payload: Dict):
     """
     Handle Gmail draft creation from modal button.
-    Uses data from conversation_state (already generated).
+    Uses data from database (already generated).
     """
     # NOTE: This function reuses the existing handle_create_gmail_draft logic
-    # The data is already in conversation_state from handle_followup_meeting_submission
-    return handle_create_gmail_draft(payload)
+    # The data is already in database from handle_followup_meeting_submission
+    return handle_create_gmail_draft(db, payload)
 
 
-def handle_create_calendar_event_from_modal(payload: Dict):
+def handle_create_calendar_event_from_modal(db, payload: Dict):
     """
     Handle calendar event creation from modal button.
-    Uses data from conversation_state (already generated).
+    Uses data from database (already generated).
     """
     # NOTE: This function reuses the existing handle_create_calendar_event logic
-    return handle_create_calendar_event(payload)
+    return handle_create_calendar_event(db, payload)
 
 
-def handle_push_note_to_crono_from_modal(payload: Dict):
+def handle_push_note_to_crono_from_modal(db, payload: Dict):
     """
     Handle Crono note creation from modal button.
-    Uses data from conversation_state (already generated).
+    Uses data from database (already generated).
     """
     # NOTE: This function reuses the existing handle_create_crono_note logic
-    return handle_create_crono_note(payload)
+    return handle_create_crono_note(db, payload)
 
 
-def handle_view_crono_deals_from_modal(payload: Dict):
+def handle_view_crono_deals_from_modal(db, payload: Dict):
     """
     Handle viewing Crono deals from modal button.
-    Uses data from conversation_state (already generated).
+    Uses data from database (already generated).
     """
     # NOTE: This function reuses the existing handle_view_crono_deals logic
-    return handle_view_crono_deals(payload)
+    return handle_view_crono_deals(db, payload)
 
 
-def handle_create_crono_task_from_modal(payload: Dict):
+def handle_create_crono_task_from_modal(db, payload: Dict):
     """
     Handle creating Crono task from modal button.
     Opens a new modal for task creation using the external_select for contact search.
@@ -1864,10 +1939,10 @@ def handle_create_crono_task_from_modal(payload: Dict):
 
         logger.info(f"✅ Opening task creation modal for recording {recording_id}...")
 
-        # Get meeting data from conversation_state if available
+        # Get meeting data from database if available
         meeting_title = "Follow-up Task"
-        if recording_id and recording_id in conversation_state:
-            state = conversation_state[recording_id]
+        if recording_id and get_conversation_state(db, recording_id):
+            state = get_conversation_state(db, recording_id)
             meeting_title = state.get('meeting_title', 'Follow-up Task')
 
         # Get today's date as initial date
@@ -1975,7 +2050,7 @@ def handle_create_crono_task_from_modal(payload: Dict):
         })
 
 
-def handle_block_suggestion(payload: dict):
+def handle_block_suggestion(db, payload: dict):
     """Handler for external select suggestions (e.g., prospect search)."""
     action_id = payload.get('action_id')
     user_id = payload.get('user', {}).get('id')
@@ -2036,7 +2111,7 @@ def handle_block_suggestion(payload: dict):
     return jsonify({"options": []})
 
 
-def handle_followup_meeting_submission(payload: dict):
+def handle_followup_meeting_submission(db, payload: dict):
     """
     Handle submission of the first modal (meeting selection).
     Opens a second modal with editable AI-generated content.
@@ -2322,19 +2397,20 @@ def handle_followup_meeting_submission(payload: dict):
                 ]
             }
 
-            # Store data in conversation_state for modal handler
-            conversation_state[selected_recording_id] = {
-                'meeting_title': meeting_title,
-                'meeting_summary': html_to_text(meeting_summary),
-                'final_email': html_to_text(final_email),
-                'crm_note': crm_note_content,
-                'external_emails': external_emails,
-                'external_attendees_str': external_attendees_str,
-                'user_id': user_id,
-                'team_id': team_id,
-                'meeting_data': meeting_data,
-                'transcript': transcript
-            }
+            # Store data in database for modal handler
+            with get_db() as thread_db:
+                set_conversation_state(thread_db, selected_recording_id, {
+                    'meeting_title': meeting_title,
+                    'meeting_summary': html_to_text(meeting_summary),
+                    'final_email': html_to_text(final_email),
+                    'crm_note': crm_note_content,
+                    'external_emails': external_emails,
+                    'external_attendees_str': external_attendees_str,
+                    'user_id': user_id,
+                    'team_id': team_id,
+                    'meeting_data': meeting_data,
+                    'transcript': transcript
+                })
 
             logger.info(f"✅ Content generated, updating message with 'View & Edit' button")
 
@@ -2411,7 +2487,7 @@ def handle_followup_meeting_submission(payload: dict):
     return jsonify({"response_action": "clear"})
 
 
-def handle_crono_task_submission(payload: dict):
+def handle_crono_task_submission(db, payload: dict):
     """Handle submission of Crono task creation modal."""
     view = payload.get('view', {})
     user = payload.get('user', {})

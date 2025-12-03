@@ -22,6 +22,7 @@ from src.models.account_mapping import AccountMapping
 from src.models.audit_log import AuditLog
 from src.models.api_rate_limit import APIRateLimit
 from src.models.user_settings import UserSettings
+from src.models.conversation_state import ConversationState
 
 # Export all models for convenience
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "AuditLog",
     "APIRateLimit",
     "UserSettings",
+    "ConversationState",
 ]
 
 
@@ -102,6 +104,7 @@ def get_model_by_name(model_name: str):
         "AuditLog": AuditLog,
         "APIRateLimit": APIRateLimit,
         "UserSettings": UserSettings,
+        "ConversationState": ConversationState,
     }
     return models.get(model_name)
 
@@ -127,6 +130,7 @@ def list_all_models():
         AuditLog,
         APIRateLimit,
         UserSettings,
+        ConversationState,
     ]
 
 
