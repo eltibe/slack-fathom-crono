@@ -922,6 +922,8 @@ def handle_create_gmail_draft(db, payload: Dict):
         # Get recording_id from button value
         recording_id = payload['actions'][0]['value']
         response_url = payload.get('response_url')
+        slack_user_id = payload['user']['id']
+        team_id = payload['team']['id']
 
         logger.info(f"📧 Creating Gmail draft for recording {recording_id}...")
 
@@ -945,6 +947,25 @@ def handle_create_gmail_draft(db, payload: Dict):
                 "text": "⚠️ No external attendees found. Cannot create draft without recipients."
             })
 
+        # Get user and check Gmail token
+        tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+        if not tenant:
+            return jsonify({
+                "response_type": "ephemeral",
+                "text": "❌ Tenant not found"
+            })
+
+        user = db.query(User).filter(
+            User.slack_user_id == slack_user_id,
+            User.tenant_id == tenant.id
+        ).first()
+
+        if not user or not user.settings or not user.settings.gmail_token:
+            return jsonify({
+                "response_type": "ephemeral",
+                "text": "❌ Please connect your Google account first at https://slack-fathom-crono.onrender.com/settings"
+            })
+
         # Process in background (Gmail API can be slow)
         import threading
 
@@ -952,7 +973,16 @@ def handle_create_gmail_draft(db, payload: Dict):
             try:
                 logger.info(f"🔄 Creating Gmail draft in background...")
 
-                gmail = GmailDraftCreator()
+                # Define callback to save refreshed tokens
+                def save_gmail_token(new_token_json):
+                    user.settings.gmail_token = new_token_json
+                    db.commit()
+                    logger.info(f"Refreshed Gmail token for user {slack_user_id}")
+
+                gmail = GmailDraftCreator(
+                    token_json=user.settings.gmail_token,
+                    token_save_callback=save_gmail_token
+                )
                 draft_id = gmail.create_draft_from_generated_email(
                     email_text=email_text,
                     to=recipients
@@ -1162,7 +1192,7 @@ def handle_create_crono_note(db, payload: Dict):
 
         state = get_conversation_state(db, recording_id)
         meeting_title = state['meeting_title']
-        sales_data = state['sales_data']
+        sales_data = state.get('sales_data', {})  # Use empty dict if not present
         meeting_url = state['meeting_url']
         external_emails = state['external_emails']
 
