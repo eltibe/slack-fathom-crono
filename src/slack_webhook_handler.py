@@ -423,6 +423,17 @@ def slack_commands():
                         },
                         {
                             "type": "input",
+                            "block_id": "crono_time_block",
+                            "label": {"type": "plain_text", "text": "Time"},
+                            "element": {
+                                "type": "timepicker",
+                                "action_id": "crono_task_time",
+                                "initial_time": "09:00",
+                                "placeholder": {"type": "plain_text", "text": "Select time"}
+                            }
+                        },
+                        {
+                            "type": "input",
                             "block_id": "crono_type_block",
                             "label": {"type": "plain_text", "text": "Task type"},
                             "element": {
