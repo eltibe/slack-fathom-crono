@@ -1306,13 +1306,12 @@ def update_modal_with_success(view: Dict, completed_action_id: str, success_mess
         action_link: Optional link to the created resource
 
     Returns:
-        Updated view dict
+        Updated view dict (cleaned for views.update API)
     """
     import copy
 
     # Deep copy to avoid modifying original
-    updated_view = copy.deepcopy(view)
-    blocks = updated_view.get('blocks', [])
+    blocks = copy.deepcopy(view.get('blocks', []))
 
     # Create success banner
     success_block = {
@@ -1360,8 +1359,20 @@ def update_modal_with_success(view: Dict, completed_action_id: str, success_mess
                     if 'style' not in element:
                         element['style'] = 'primary'
 
-    updated_view['blocks'] = blocks
-    return updated_view
+    # Return only the fields that views.update accepts
+    # Exclude: id, team_id, state, hash, previous_view_id, root_view_id, app_id, app_installed_team_id, bot_id
+    return {
+        "type": view.get("type", "modal"),
+        "title": view.get("title"),
+        "submit": view.get("submit"),
+        "close": view.get("close"),
+        "blocks": blocks,
+        "private_metadata": view.get("private_metadata"),
+        "callback_id": view.get("callback_id"),
+        "clear_on_close": view.get("clear_on_close"),
+        "notify_on_close": view.get("notify_on_close"),
+        "external_id": view.get("external_id")
+    }
 
 
 def handle_create_crono_note(db, payload: Dict):
