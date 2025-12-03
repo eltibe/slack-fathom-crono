@@ -2376,14 +2376,18 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
 
         logger.info(f"✅ Opening task creation modal for recording {recording_id}...")
 
-        # Get meeting data from database if available
-        meeting_title = "Follow-up Task"
-        if recording_id and get_conversation_state(db, recording_id):
-            state = get_conversation_state(db, recording_id)
-            meeting_title = state.get('meeting_title', 'Follow-up Task')
-
         # Get today's date as initial date
         today = datetime.now().strftime("%Y-%m-%d")
+
+        # Get meeting title quickly (without blocking)
+        meeting_title = "Follow-up Task"
+        try:
+            if recording_id:
+                state = get_conversation_state(db, recording_id)
+                if state:
+                    meeting_title = state.get('meeting_title', 'Follow-up Task')
+        except Exception as e:
+            logger.warning(f"Could not fetch meeting title: {e}")
 
         # Open the same task creation modal as /crono-add-task command
         slack_web_client.views_open(
