@@ -2397,9 +2397,12 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
         except Exception as e:
             logger.warning(f"Could not fetch meeting title: {e}")
 
-        # Open the same task creation modal as /crono-add-task command
-        logger.info(f"🔄 Opening task modal with trigger_id...")
-        response = slack_web_client.views_open(
+        # Push the task creation modal on top of current modal
+        # NOTE: Must use views.push() (not views.open()) because trigger_id comes from a button
+        # inside a modal. views.open() only works with trigger_id from slash commands.
+        # See: https://stackoverflow.com/questions/68532320
+        logger.info(f"🔄 Pushing task modal on top of current modal...")
+        response = slack_web_client.views_push(
             trigger_id=trigger_id,
             view={
                 "type": "modal",
