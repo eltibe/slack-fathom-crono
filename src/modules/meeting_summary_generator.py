@@ -4,18 +4,20 @@ Uses AI to generate concise meeting summaries for calendar events
 """
 
 import os
-import anthropic
+import logging
 from typing import Optional
+
+# Import AI generator with fallback support
+from src.modules.ai_generator import AIGenerator
+
+logger = logging.getLogger(__name__)
 
 
 class MeetingSummaryGenerator:
     def __init__(self, api_key: Optional[str] = None):
-        """Initialize Claude client for summary generation"""
-        self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
-        if not self.api_key:
-            raise ValueError("Anthropic API key is required")
-
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        """Initialize AI generator with Claude/Gemini fallback"""
+        self.ai_generator = AIGenerator()
+        logger.info("📝 Meeting summary generator initialized with AI fallback")
 
     def generate_calendar_summary(self, transcript: str, meeting_title: str, meeting_language: str = 'en') -> str:
         """
@@ -63,18 +65,13 @@ Keep it VERY concise - maximum 2-3 lines total.
 """
 
         try:
-            message = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=300,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            return message.content[0].text.strip()
+            logger.info("🤖 Generating meeting summary with AI...")
+            result = self.ai_generator.generate_text(prompt, max_tokens=300)
+            logger.info("✅ Meeting summary generated successfully")
+            return result.strip()
 
         except Exception as e:
-            print(f"Error generating summary: {e}")
+            logger.error(f"❌ Error generating summary: {e}")
             return f"• Follow-up meeting to discuss next steps from: {meeting_title}"
 
 

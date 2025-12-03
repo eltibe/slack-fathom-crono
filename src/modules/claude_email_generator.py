@@ -4,19 +4,22 @@ Uses Anthropic's Claude API to generate follow-up emails from meeting transcript
 """
 
 import os
-import anthropic
+import logging
 from typing import Optional
+
+# Import AI generator with fallback support
+from src.modules.ai_generator import AIGenerator
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeEmailGenerator:
     def __init__(self, api_key: Optional[str] = None, knowledge_base_path: str = "crono_knowledge_base.txt"):
-        """Initialize Claude client with API key"""
-        self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
-        if not self.api_key:
-            raise ValueError("Anthropic API key is required")
-
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        """Initialize AI generator with Claude/Gemini fallback"""
+        # Use AI generator with automatic fallback
+        self.ai_generator = AIGenerator()
         self.crono_knowledge = self._load_knowledge_base(knowledge_base_path)
+        logger.info("📧 Email generator initialized with AI fallback")
 
     def _load_knowledge_base(self, path: str) -> str:
         """Load Crono company knowledge base"""
@@ -58,22 +61,14 @@ class ClaudeEmailGenerator:
         prompt = self._build_prompt(transcript, context, tone, meeting_language)
 
         try:
-            message = self.client.messages.create(
-                model="claude-sonnet-4-20250514",  # Latest Claude model
-                max_tokens=2000,
-                temperature=0.7,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            if message.content:
-                return message.content[0].text
-            else:
-                return "Error: No response generated"
+            logger.info("🤖 Generating followup email with AI (Claude → Gemini fallback)...")
+            result = self.ai_generator.generate_text(prompt, max_tokens=2000)
+            logger.info("✅ Email generated successfully")
+            return result
 
         except Exception as e:
-            return f"Error generating email with Claude: {e}"
+            logger.error(f"❌ Error generating email: {e}")
+            return f"Error generating email: {e}"
 
     def _build_prompt(
         self,
@@ -182,23 +177,14 @@ Current draft:
 Please provide an improved version of the email."""
 
         try:
-            message = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                temperature=0.7,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            if message.content:
-                return message.content[0].text
-            else:
-                return draft  # Return original if generation fails
+            logger.info("🤖 Improving email draft with AI...")
+            result = self.ai_generator.generate_text(prompt, max_tokens=2000)
+            logger.info("✅ Email improvement successful")
+            return result
 
         except Exception as e:
-            print(f"Error improving email: {e}")
-            return draft
+            logger.error(f"❌ Error improving email: {e}")
+            return draft  # Return original if generation fails
 
 
 if __name__ == "__main__":
