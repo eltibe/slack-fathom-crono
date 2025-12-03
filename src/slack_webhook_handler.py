@@ -54,6 +54,19 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 
+# Global error handler
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """
+    Global error handler for all unhandled exceptions.
+    Logs the error and returns a generic error response.
+    """
+    logger.error(f"Unhandled exception: {error}", exc_info=True)
+    return jsonify({
+        "error": "Internal server error",
+        "message": str(error)
+    }), 500
+
 # Create SSL context that doesn't verify certificates (for local development)
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False

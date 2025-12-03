@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: slack-fathom-crono
+    runtime: python
+    region: frankfurt  # EU region for better latency
+    plan: starter  # $7/month - Always-on
+    
+    # Build settings
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -c gunicorn_config.py src.slack_webhook_handler:app
+    
+    # Health check
+    healthCheckPath: /health
+    
+    # Environment
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: FLASK_ENV
+        value: production
+      - key: PORT
+        value: "10000"  # Render uses port 10000 by default
+      
+      # These will be set manually in Render dashboard
+      - key: DATABASE_URL
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FATHOM_API_KEY
+        sync: false
+      - key: CRONO_API_KEY
+        sync: false
+      - key: CRONO_PUBLIC_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
