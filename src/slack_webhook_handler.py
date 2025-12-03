@@ -739,12 +739,13 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
         )
 
         # Extract sales insights
-        # Always generate CRM notes in English for consistency
+        # Generate CRM notes following the structured schema when possible
+        # If not a discovery/demo call, generate a detailed free-form recap
         sales_gen = SalesSummaryGenerator()
         sales_data = sales_gen.extract_sales_data(
             transcript=transcript,
             meeting_title=meeting_title,
-            meeting_language='en'  # Force English for CRM notes
+            meeting_language=meeting_language  # Use detected language (or None for auto-detect)
         )
 
         # Get meeting URL
@@ -2087,12 +2088,14 @@ def handle_view_crono_deals(db, payload: Dict):
 
                 # Get deals for the account
                 all_deals = crm_provider.get_deals(account_id, limit=100)
+                logger.info(f"📊 Found {len(all_deals)} total deals for account {account_id}")
 
                 # Filter out closed deals
                 open_deals = [
                     deal for deal in all_deals
                     if deal.get('stage', '').lower() not in ['closed won', 'closed lost']
                 ]
+                logger.info(f"📊 After filtering, {len(open_deals)} open deals remain")
 
                 if not open_deals:
                     logger.warning(f"⚠️ No open deals found for account {account_id}")
