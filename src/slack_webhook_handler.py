@@ -1169,6 +1169,116 @@ def handle_create_calendar_event(db, payload: Dict):
         })
 
 
+def build_actions_modal(recording_id: str, success_message: str, action_link: str = None, action_link_text: str = None):
+    """
+    Build a modal view with success message and remaining action buttons.
+
+    Args:
+        recording_id: Recording ID for button values
+        success_message: Success message to display at top (markdown format)
+        action_link: Optional URL for primary action button
+        action_link_text: Text for primary action button
+
+    Returns:
+        Dict representing modal view structure
+    """
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": success_message
+            }
+        }
+    ]
+
+    # Add action link button if provided
+    if action_link and action_link_text:
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": action_link_text
+                    },
+                    "url": action_link,
+                    "style": "primary"
+                }
+            ]
+        })
+
+    # Add divider and remaining actions
+    blocks.extend([
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Other Actions:*"
+            }
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Create Note"
+                    },
+                    "style": "primary",
+                    "action_id": "create_crono_note",
+                    "value": recording_id
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Create Task"
+                    },
+                    "style": "primary",
+                    "action_id": "create_crono_task",
+                    "value": recording_id
+                }
+            ]
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Create Gmail Draft"
+                    },
+                    "action_id": "create_gmail_draft",
+                    "value": recording_id
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Create Calendar Event"
+                    },
+                    "action_id": "create_calendar_event",
+                    "value": recording_id
+                }
+            ]
+        }
+    ])
+
+    return {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "Meeting Actions"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": blocks
+    }
+
+
 def handle_create_crono_note(db, payload: Dict):
     """Handle when user clicks 'Create Crono Note' button."""
     import sys
@@ -1305,85 +1415,14 @@ def handle_create_crono_note(db, payload: Dict):
 
                 if note_id:
                     # Update modal with success message and remaining actions
-                    slack_client.client.views_update(
-                        view_id=view_id,
-                        view={
-                            "type": "modal",
-                            "title": {"type": "plain_text", "text": "Meeting Actions"},
-                            "close": {"type": "plain_text", "text": "Close"},
-                            "blocks": [
-                                {
-                                    "type": "section",
-                                    "text": {
-                                        "type": "mrkdwn",
-                                        "text": f"✅ *Crono Note Created!*\n\n*Account:* {account_name}\n*Meeting:* {meeting_title}"
-                                    }
-                                },
-                                {
-                                    "type": "actions",
-                                    "elements": [
-                                        {
-                                            "type": "button",
-                                            "text": {
-                                                "type": "plain_text",
-                                                "text": "🔗 Open in Crono"
-                                            },
-                                            "url": crono_url,
-                                            "style": "primary"
-                                        }
-                                    ]
-                                },
-                                {
-                                    "type": "divider"
-                                },
-                                {
-                                    "type": "section",
-                                    "text": {
-                                        "type": "mrkdwn",
-                                        "text": "*Other Actions:*"
-                                    }
-                                },
-                                {
-                                    "type": "actions",
-                                    "elements": [
-                                        {
-                                            "type": "button",
-                                            "text": {
-                                                "type": "plain_text",
-                                                "text": "Create Task"
-                                            },
-                                            "style": "primary",
-                                            "action_id": "create_crono_task",
-                                            "value": recording_id
-                                        },
-                                        {
-                                            "type": "button",
-                                            "text": {
-                                                "type": "plain_text",
-                                                "text": "Create Gmail Draft"
-                                            },
-                                            "action_id": "create_gmail_draft",
-                                            "value": recording_id
-                                        }
-                                    ]
-                                },
-                                {
-                                    "type": "actions",
-                                    "elements": [
-                                        {
-                                            "type": "button",
-                                            "text": {
-                                                "type": "plain_text",
-                                                "text": "Create Calendar Event"
-                                            },
-                                            "action_id": "create_calendar_event",
-                                            "value": recording_id
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
+                    success_message = f"✅ *Crono Note Created!*\n\n*Account:* {account_name}\n*Meeting:* {meeting_title}"
+                    modal_view = build_actions_modal(
+                        recording_id=recording_id,
+                        success_message=success_message,
+                        action_link=crono_url,
+                        action_link_text="🔗 Open in Crono"
                     )
+                    slack_client.client.views_update(view_id=view_id, view=modal_view)
                     return jsonify({})
                 else:
                     raise Exception("Failed to create note")
