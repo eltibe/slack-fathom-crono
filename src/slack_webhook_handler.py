@@ -2384,18 +2384,46 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
             logger.error(f"❌ No trigger_id in payload!")
             return jsonify({"response_type": "ephemeral", "text": "❌ Missing trigger_id"})
 
-        # Get today's date as initial date
+        # Get today's date and default time
         today = datetime.now().strftime("%Y-%m-%d")
+        default_time = "09:00"  # Default to 9 AM
 
-        # Get meeting title quickly (without blocking)
+        # Get meeting data from conversation state
         meeting_title = "Follow-up Task"
+        external_emails = []
+        initial_contact_option = None
+
         try:
             if recording_id:
                 state = get_conversation_state(db, recording_id)
                 if state:
                     meeting_title = state.get('meeting_title', 'Follow-up Task')
+                    external_emails = state.get('external_emails', [])
+
+                    # Try to find the first external contact in Crono to prefill
+                    if external_emails:
+                        logger.info(f"🔍 Searching for prospect with email: {external_emails[0]}")
+                        credentials = get_user_crm_credentials(db, user_id, team_id)
+                        if credentials:
+                            crm_provider = CronoProvider(credentials=credentials)
+                            # Search by email (exact match)
+                            prospects = crm_provider.search_prospects(query=external_emails[0], account_id=None, limit=1)
+                            if prospects and len(prospects) > 0:
+                                prospect = prospects[0]
+                                display_name = prospect.get('name', 'Contact')
+                                account_name = prospect.get('accountName', '')
+                                if account_name and account_name != 'Unknown Account':
+                                    display_name += f" ({account_name})"
+                                if prospect.get('email'):
+                                    display_name += f" - {prospect.get('email')}"
+
+                                initial_contact_option = {
+                                    "text": {"type": "plain_text", "text": display_name[:75]},
+                                    "value": f"{prospect.get('id', '')}|{prospect.get('accountId', '')}"
+                                }
+                                logger.info(f"✅ Found prospect: {display_name}")
         except Exception as e:
-            logger.warning(f"Could not fetch meeting title: {e}")
+            logger.warning(f"Could not fetch meeting data or prospect: {e}")
 
         # Push the task creation modal on top of current modal
         # NOTE: Must use views.push() (not views.open()) because trigger_id comes from a button
@@ -2424,7 +2452,8 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
                             "type": "external_select",
                             "action_id": "crono_prospect_select",
                             "placeholder": {"type": "plain_text", "text": "Search for a contact..."},
-                            "min_query_length": 2
+                            "min_query_length": 2,
+                            **({"initial_option": initial_contact_option} if initial_contact_option else {})
                         }
                     },
                     {
@@ -2447,6 +2476,17 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
                             "action_id": "crono_task_date",
                             "initial_date": today,
                             "placeholder": {"type": "plain_text", "text": "Select day"}
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "crono_time_block",
+                        "label": {"type": "plain_text", "text": "Time"},
+                        "element": {
+                            "type": "timepicker",
+                            "action_id": "crono_task_time",
+                            "initial_time": default_time,
+                            "placeholder": {"type": "plain_text", "text": "Select time"}
                         }
                     },
                     {
@@ -2977,6 +3017,9 @@ def handle_crono_task_submission(db, payload: dict):
     date_state = state.get('crono_date_block', {}).get('crono_task_date', {})
     selected_date = date_state.get('selected_date')  # Format: YYYY-MM-DD
 
+    time_state = state.get('crono_time_block', {}).get('crono_task_time', {})
+    selected_time = time_state.get('selected_time')  # Format: HH:MM
+
     type_state = state.get('crono_type_block', {}).get('crono_task_type', {})
     selected_option_type = type_state.get('selected_option', {})
     selected_type = selected_option_type.get('value', 'call')
@@ -2984,9 +3027,15 @@ def handle_crono_task_submission(db, payload: dict):
     description_state = state.get('crono_description_block', {}).get('crono_task_description', {})
     description = description_state.get('value', '')
 
-    # Convert date to datetime (set time to 9 AM)
+    # Convert date and time to datetime
     if selected_date:
-        due_date = datetime.strptime(selected_date, "%Y-%m-%d").replace(hour=9, minute=0, second=0)
+        due_date = datetime.strptime(selected_date, "%Y-%m-%d")
+        # Add time if provided
+        if selected_time:
+            time_parts = selected_time.split(':')
+            due_date = due_date.replace(hour=int(time_parts[0]), minute=int(time_parts[1]), second=0)
+        else:
+            due_date = due_date.replace(hour=9, minute=0, second=0)
     else:
         due_date = datetime.now().replace(hour=9, minute=0, second=0)
 
