@@ -2374,7 +2374,15 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
         team_id = payload.get('team', {}).get('id')
         trigger_id = payload.get('trigger_id')
 
-        logger.info(f"✅ Opening task creation modal for recording {recording_id}...")
+        logger.info(f"🔍 DEBUG: handle_create_crono_task_from_modal called")
+        logger.info(f"   recording_id: {recording_id}")
+        logger.info(f"   user_id: {user_id}")
+        logger.info(f"   team_id: {team_id}")
+        logger.info(f"   trigger_id: {trigger_id}")
+
+        if not trigger_id:
+            logger.error(f"❌ No trigger_id in payload!")
+            return jsonify({"response_type": "ephemeral", "text": "❌ Missing trigger_id"})
 
         # Get today's date as initial date
         today = datetime.now().strftime("%Y-%m-%d")
@@ -2476,7 +2484,8 @@ def handle_create_crono_task_from_modal(db, payload: Dict):
 
         # Return empty response (200 OK) - Slack will show the new modal
         # Don't return jsonify with content or Slack will show checkmark
-        return ('', 200)
+        from flask import Response
+        return Response('', status=200, mimetype='text/plain')
 
     except SlackApiError as e:
         logger.error(f"❌ Slack API error opening task modal: {e.response}")
