@@ -4,7 +4,8 @@ services:
     runtime: python
     region: frankfurt  # EU region for better latency
     plan: starter  # $7/month - Always-on
-    
+    pythonVersion: "3.11"  # SQLAlchemy 2.0.23 not compatible with Python 3.13
+
     # Build settings
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn -c gunicorn_config.py src.slack_webhook_handler:app
