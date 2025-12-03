@@ -432,16 +432,15 @@ def slack_commands():
 def slack_interactions():
     """Handle Slack interactive components (buttons, checkboxes, etc.)."""
 
+    # Verify the request is from Slack
+    if not verify_slack_request(request):
+        return jsonify({'error': 'Invalid signature'}), 403
+
+    # Parse the payload
+    payload = json.loads(request.form.get('payload'))
+
     # Get database session
-    db = next(get_db())
-    try:
-        # Verify the request is from Slack
-        if not verify_slack_request(request):
-            return jsonify({'error': 'Invalid signature'}), 403
-
-        # Parse the payload
-        payload = json.loads(request.form.get('payload'))
-
+    with get_db() as db:
         interaction_type = payload.get('type')
 
         if interaction_type == 'block_actions':
@@ -493,8 +492,6 @@ def slack_interactions():
                 return handle_followup_meeting_submission(db, payload)
 
         return jsonify({'status': 'ok'})
-    finally:
-        db.close()
 
 
 def verify_slack_request(request) -> bool:
