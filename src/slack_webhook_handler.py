@@ -2415,10 +2415,319 @@ def handle_push_note_to_crono_from_modal(db, payload: Dict):
 def handle_view_crono_deals_from_modal(db, payload: Dict):
     """
     Handle viewing Crono deals from modal button.
-    Uses data from database (already generated).
+    Must use views.update() because we're already inside a modal (can't stack modals).
     """
-    # NOTE: This function reuses the existing handle_view_crono_deals logic
-    return handle_view_crono_deals(db, payload)
+    import sys
+    import requests
+
+    try:
+        # Get recording_id from button value
+        recording_id = payload['actions'][0]['value']
+        user_id = payload.get('user', {}).get('id')
+
+        # Get view_id from current modal (instead of trigger_id)
+        view_id = payload.get('view', {}).get('id')
+
+        if not view_id:
+            logger.error("❌ No view_id found in payload - cannot update modal")
+            return jsonify({
+                "response_type": "ephemeral",
+                "text": "❌ Error: Could not open modal (no view_id)"
+            })
+
+        logger.info(f"💰 Viewing Crono deals from modal for recording {recording_id}...")
+
+        # Retrieve stored meeting data
+        if not get_conversation_state(db, recording_id):
+            logger.error(f"❌ No data found for recording {recording_id}")
+            # For modal update, we need to show error in the modal itself
+            from modules.slack_client import SlackClient
+            slack_client_inst = SlackClient()
+            slack_web_client = slack_client_inst._client
+
+            slack_web_client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "title": {"type": "plain_text", "text": "Error"},
+                    "close": {"type": "plain_text", "text": "Close"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "❌ Meeting data not found. Please try processing the meeting again."
+                            }
+                        }
+                    ]
+                }
+            )
+            return jsonify({})
+
+        state = get_conversation_state(db, recording_id)
+        external_emails = state['external_emails']
+
+        if not external_emails:
+            from modules.slack_client import SlackClient
+            slack_client_inst = SlackClient()
+            slack_web_client = slack_client_inst._client
+
+            slack_web_client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "title": {"type": "plain_text", "text": "No Attendees"},
+                    "close": {"type": "plain_text", "text": "Close"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "⚠️ No external attendees found. Cannot determine Crono account for deals."
+                            }
+                        }
+                    ]
+                }
+            )
+            return jsonify({})
+
+        # Process synchronously
+        try:
+            logger.info(f"🔄 Fetching Crono deals synchronously...")
+
+            # Get tenant's CRM credentials
+            crm_type = os.getenv('CRM_PROVIDER', 'crono')
+            credentials = {
+                'public_key': os.getenv('CRONO_PUBLIC_KEY'),
+                'private_key': os.getenv('CRONO_API_KEY')
+            }
+            crm_provider = CRMProviderFactory.create(crm_type, credentials)
+
+            # Find account by domain
+            email_domain = external_emails[0].split('@')[-1]
+            company_name_raw = email_domain.split('.')[0]
+
+            account = crm_provider.find_account_by_domain(
+                email_domain=email_domain,
+                company_name=company_name_raw
+            )
+
+            if not account:
+                logger.warning(f"⚠️  No Crono account found for domain {email_domain}")
+                from modules.slack_client import SlackClient
+                slack_client_inst = SlackClient()
+                slack_web_client = slack_client_inst._client
+
+                slack_web_client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Account Not Found"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"⚠️ No Crono account found for domain '{email_domain}'.\n\nCannot retrieve deals without a linked Crono account."
+                                }
+                            }
+                        ]
+                    }
+                )
+                return jsonify({})
+
+            account_id = account.get('objectId') or account.get('id')
+            account_name = account.get('name', 'Unknown')
+
+            logger.info(f"✅ Found Crono account: {account_name} ({account_id})")
+
+            # Get deals for the account
+            all_deals = crm_provider.get_deals(account_id, limit=100)
+            logger.info(f"📊 Found {len(all_deals)} total deals for account {account_id}")
+
+            # Filter out closed deals
+            open_deals = [
+                deal for deal in all_deals
+                if deal.get('stage', '').lower() not in ['closed won', 'closed lost']
+            ]
+            logger.info(f"📊 After filtering, {len(open_deals)} open deals remain")
+
+            if not open_deals:
+                logger.warning(f"⚠️ No open deals found for account {account_id}")
+                from modules.slack_client import SlackClient
+                slack_client_inst = SlackClient()
+                slack_web_client = slack_client_inst._client
+
+                slack_web_client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "No Open Deals"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"⚠️ No open deals found for account '{account_name}'.\n\nAll deals are either Closed Won or Closed Lost."
+                                }
+                            }
+                        ]
+                    }
+                )
+                return jsonify({})
+
+            # Sort by date (most recent first)
+            open_deals.sort(
+                key=lambda d: d.get('lastModifiedDate', d.get('createdDate', '')),
+                reverse=True
+            )
+
+            # Get the most recent deal
+            latest_deal = open_deals[0]
+            deal_id = latest_deal.get('objectId') or latest_deal.get('id')
+            deal_name = latest_deal.get('name', 'Unknown Deal')
+            deal_stage = latest_deal.get('stage', 'Unknown')
+            deal_amount = latest_deal.get('amount', 0)
+            deal_currency = latest_deal.get('currency', 'USD')
+            deal_close_date = latest_deal.get('closeDate', 'N/A')
+
+            logger.info(f"✅ Found most recent open deal: {deal_name} (ID: {deal_id})")
+
+            # Store deal data in conversation state for submission handler
+            state_key = f"deal_edit_{user_id}_{deal_id}"
+            store_conversation_state(db, state_key, {
+                'deal_id': deal_id,
+                'account_id': account_id,
+                'account_name': account_name,
+                'recording_id': recording_id
+            })
+
+            # Get available stages for dropdown
+            available_stages = [
+                {"text": {"type": "plain_text", "text": "Lead"}, "value": "Lead"},
+                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "Qualified"},
+                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "Proposal"},
+                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "Negotiation"},
+                {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "Closed Won"},
+                {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "Closed Lost"}
+            ]
+
+            # Find current stage option for initial selection
+            initial_stage = next(
+                (opt for opt in available_stages if opt["value"] == deal_stage),
+                available_stages[0]
+            )
+
+            # Update current modal with deal details using views.update
+            from modules.slack_client import SlackClient
+            slack_client_inst = SlackClient()
+            slack_web_client = slack_client_inst._client
+
+            logger.info(f"🔄 Updating modal with deal edit view for deal {deal_id}...")
+            slack_web_client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "edit_crono_deal_modal",
+                    "private_metadata": state_key,
+                    "title": {"type": "plain_text", "text": "Edit Deal"},
+                    "submit": {"type": "plain_text", "text": "Save Changes"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": f"💰 {deal_name}"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Account:* {account_name}\n*Deal ID:* `{deal_id}`\n*Close Date:* {deal_close_date}"
+                            }
+                        },
+                        {"type": "divider"},
+                        {
+                            "type": "input",
+                            "block_id": "deal_amount_block",
+                            "label": {"type": "plain_text", "text": "Amount"},
+                            "element": {
+                                "type": "number_input",
+                                "action_id": "deal_amount_input",
+                                "is_decimal_allowed": True,
+                                "initial_value": str(deal_amount) if deal_amount else "0",
+                                "placeholder": {"type": "plain_text", "text": "Enter deal amount"}
+                            },
+                            "hint": {"type": "plain_text", "text": f"Currency: {deal_currency}"}
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "deal_stage_block",
+                            "label": {"type": "plain_text", "text": "Stage"},
+                            "element": {
+                                "type": "static_select",
+                                "action_id": "deal_stage_select",
+                                "initial_option": initial_stage,
+                                "options": available_stages
+                            }
+                        },
+                        {"type": "divider"},
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"_Showing most recent open deal. Total open deals: {len(open_deals)}_"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            )
+            logger.info(f"✅ Deal edit modal updated successfully")
+
+            # Return empty response (modal is already updated)
+            return jsonify({})
+
+        except Exception as e:
+            logger.error(f"❌ Error fetching Crono deals: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+            # Show error in modal
+            from modules.slack_client import SlackClient
+            slack_client_inst = SlackClient()
+            slack_web_client = slack_client_inst._client
+
+            slack_web_client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "title": {"type": "plain_text", "text": "Error"},
+                    "close": {"type": "plain_text", "text": "Close"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"❌ Error fetching Crono deals: {str(e)}"
+                            }
+                        }
+                    ]
+                }
+            )
+            return jsonify({})
+
+    except Exception as e:
+        logger.error(f"❌ Error in handle_view_crono_deals_from_modal: {e}")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f"❌ Error: {str(e)}"
+        })
 
 
 def handle_create_crono_task_from_modal(db, payload: Dict):
