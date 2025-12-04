@@ -2156,10 +2156,6 @@ def handle_view_crono_deals(db, payload: Dict):
 
             # Open modal with deal details using views.push
             # Note: Must use views.push() because trigger comes from button in modal
-            from src.modules.slack_client import SlackClient
-            slack_client_inst = SlackClient()
-            slack_web_client = slack_client_inst._client
-
             logger.info(f"🔄 Pushing deal edit modal for deal {deal_id}...")
             slack_web_client.views_push(
                 trigger_id=trigger_id,
@@ -2441,10 +2437,6 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
         if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
             # For modal update, we need to show error in the modal itself
-            from src.modules.slack_client import SlackClient
-            slack_client_inst = SlackClient()
-            slack_web_client = slack_client_inst._client
-
             slack_web_client.views_update(
                 view_id=view_id,
                 view={
@@ -2468,10 +2460,6 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
         external_emails = state['external_emails']
 
         if not external_emails:
-            from src.modules.slack_client import SlackClient
-            slack_client_inst = SlackClient()
-            slack_web_client = slack_client_inst._client
-
             slack_web_client.views_update(
                 view_id=view_id,
                 view={
@@ -2696,10 +2684,6 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
             traceback.print_exc(file=sys.stderr)
 
             # Show error in modal
-            from src.modules.slack_client import SlackClient
-            slack_client_inst = SlackClient()
-            slack_web_client = slack_client_inst._client
-
             slack_web_client.views_update(
                 view_id=view_id,
                 view={
