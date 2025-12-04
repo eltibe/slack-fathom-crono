@@ -503,12 +503,13 @@ class CronoProvider(CRMProvider):
         except Exception as e:
             raise CRMIntegrationError(f"Failed to update deal {deal_id} to stage {stage}: {e}")
 
-    def update_deal(self, deal_id: str, amount: Optional[float] = None, stage: Optional[str] = None, description: Optional[str] = None) -> Dict:
+    def update_deal(self, deal_id: str, account_id: str, amount: Optional[float] = None, stage: Optional[str] = None, description: Optional[str] = None) -> Dict:
         """
         Update deal/opportunity in Crono (amount, stage, and/or description).
 
         Args:
             deal_id: Crono opportunity objectId
+            account_id: Crono account ID (required by API)
             amount: New amount value (optional)
             stage: New stage name (optional)
             description: New description text (optional)
@@ -516,7 +517,12 @@ class CronoProvider(CRMProvider):
         Returns:
             Updated deal data from Crono API
         """
-        payload_data = {}
+        # Build payload data according to Crono API spec
+        # IMPORTANT: Crono API expects PascalCase (OpportunityId, AccountId)
+        payload_data = {
+            "OpportunityId": deal_id,
+            "AccountId": account_id
+        }
 
         if amount is not None:
             payload_data["amount"] = amount
@@ -531,15 +537,17 @@ class CronoProvider(CRMProvider):
         if description is not None:
             payload_data["description"] = description
 
-        if not payload_data:
+        if amount is None and stage is None and description is None:
             raise ValueError("Must provide at least one field to update (amount, stage, or description)")
 
         payload = {"data": payload_data}
 
         try:
             api_url = "https://ext.crono.one/api/v1"
+            # IMPORTANT: Crono API expects PATCH /Opportunities without ID in URL
+            # The opportunityId must be in the payload body
             response = requests.patch(
-                f"{api_url}/Opportunities/{deal_id}",
+                f"{api_url}/Opportunities",
                 headers=self.headers,
                 json=payload,
                 timeout=10
@@ -554,6 +562,7 @@ class CronoProvider(CRMProvider):
                     errors = result.get('errors', [])
                     raise Exception(f"Crono deal update failed: {errors}")
             else:
+                print(f"❌ Crono API returned status {response.status_code}: {response.text[:500]}")
                 raise Exception(f"Crono API error: {response.status_code}")
 
         except Exception as e:

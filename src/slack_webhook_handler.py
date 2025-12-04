@@ -804,6 +804,14 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
                 if not isinstance(data, dict):
                     return str(data)
 
+                def convert_asterisks_to_slack_bold(text):
+                    """Convert single asterisks *word* to Slack bold format"""
+                    if not text:
+                        return text
+                    # Remove asterisks - they don't render well in Slack
+                    # Just return plain text, let Slack markdown handle the field names
+                    return text.replace('*', '')
+
                 formatted = ""
                 field_names = {
                     'tech_stack': '🔧 Tech Stack',
@@ -815,7 +823,9 @@ def process_selected_meeting(recording_id: str, channel: str, user_id: str, resp
 
                 for key, value in data.items():
                     field_name = field_names.get(key, key.replace('_', ' ').title())
-                    formatted += f"\n*{field_name}:*\n{value}\n"
+                    # Clean up value by removing asterisks
+                    clean_value = convert_asterisks_to_slack_bold(value)
+                    formatted += f"\n*{field_name}:*\n{clean_value}\n"
 
                 return formatted.strip()
 
@@ -3138,6 +3148,12 @@ def handle_followup_meeting_submission(db, payload: dict):
                 if not isinstance(data, dict):
                     return str(data)
 
+                def remove_asterisks(text):
+                    """Remove asterisks from text for CRM notes"""
+                    if not text:
+                        return text
+                    return text.replace('*', '')
+
                 formatted = ""
                 field_names = {
                     'tech_stack': 'Tech Stack',
@@ -3149,7 +3165,9 @@ def handle_followup_meeting_submission(db, payload: dict):
 
                 for key, value in data.items():
                     field_name = field_names.get(key, key.replace('_', ' ').title())
-                    formatted += f"{field_name}:\n{value}\n\n"
+                    # Remove asterisks before saving to CRM
+                    clean_value = remove_asterisks(value)
+                    formatted += f"{field_name}:\n{clean_value}\n\n"
 
                 return formatted.strip()
 
@@ -3572,6 +3590,7 @@ def handle_edit_crono_deal_submission(db, payload: Dict):
         crm_provider = CronoProvider(credentials=credentials)
         updated_deal = crm_provider.update_deal(
             deal_id=deal_id,
+            account_id=account_id,
             amount=new_amount,
             stage=new_stage,
             description=new_description
