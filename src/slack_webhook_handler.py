@@ -2502,10 +2502,6 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
 
             if not account:
                 logger.warning(f"⚠️  No Crono account found for domain {email_domain}")
-                from modules.slack_client import SlackClient
-                slack_client_inst = SlackClient()
-                slack_web_client = slack_client_inst._client
-
                 slack_web_client.views_update(
                     view_id=view_id,
                     view={
@@ -2543,10 +2539,6 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
 
             if not open_deals:
                 logger.warning(f"⚠️ No open deals found for account {account_id}")
-                from modules.slack_client import SlackClient
-                slack_client_inst = SlackClient()
-                slack_web_client = slack_client_inst._client
-
                 slack_web_client.views_update(
                     view_id=view_id,
                     view={
@@ -2609,10 +2601,6 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
             )
 
             # Update current modal with deal details using views.update
-            from src.modules.slack_client import SlackClient
-            slack_client_inst = SlackClient()
-            slack_web_client = slack_client_inst._client
-
             logger.info(f"🔄 Updating modal with deal edit view for deal {deal_id}...")
             slack_web_client.views_update(
                 view_id=view_id,
@@ -3529,9 +3517,9 @@ def handle_edit_crono_deal_submission(db, payload: Dict):
         delete_conversation_state(db, state_key)
 
         # Send success message to user
-        from modules.slack_client import SlackClient
-        slack_client = SlackClient()
-        slack_client.send_dm(
+        from src.modules.slack_client import SlackClient
+        slack_client_inst = SlackClient()
+        slack_client_inst.send_dm(
             user_id=user_id,
             message=f"✅ *Deal Updated Successfully*\n\n*Account:* {account_name}\n*Amount:* {new_amount}\n*Stage:* {new_stage}\n\n<https://app.crono.one/accounts/{account_id}|View in Crono>"
         )
