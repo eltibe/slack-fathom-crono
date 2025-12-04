@@ -721,21 +721,25 @@ class CronoProvider(CRMProvider):
             Note ID (account_id) if successful, None otherwise
         """
         # Build plain text content for note
-        content = f"""🎯 Meeting Summary: {meeting_title}
+        content = f"""➡️ Meeting Summary:
+{meeting_title}
 
-💻 Tech Stack
+💻 Tech Stack:
 {summary_data.get('tech_stack', 'N/A')}
 
-⚠️ Pain Points
+⚠️ Pain Points:
 {summary_data.get('pain_points', 'N/A')}
 
-📊 Impact of Pain
+📊 Impact of Pain:
 {summary_data.get('impact', 'N/A')}
 
-✅ Next Steps
+🔧 How Crono Helps (optional):
+{summary_data.get('how_crono_helps', 'N/A')}
+
+✅ Next Steps:
 {summary_data.get('next_steps', 'N/A')}
 
-🚧 Roadblocks
+🚧 Roadblocks:
 {summary_data.get('roadblocks', 'N/A')}"""
 
         if meeting_url:

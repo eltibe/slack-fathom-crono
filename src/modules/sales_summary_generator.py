@@ -33,7 +33,7 @@ class SalesSummaryGenerator:
             meeting_language: Language code (e.g., 'en', 'it', 'es') or None for auto-detect
 
         Returns:
-            Dictionary with keys: tech_stack, pain_points, impact, next_steps, roadblocks
+            Dictionary with keys: tech_stack, pain_points, impact, how_crono_helps, next_steps, roadblocks
         """
         prompt = self._build_extraction_prompt(transcript, meeting_title, meeting_language)
 
@@ -95,13 +95,19 @@ Analyze the meeting transcript and extract the following information in a struct
    - Include metrics like: hours per week, revenue impact, team size affected, etc.
    - If not discussed, write "Not discussed" in the meeting language
 
-4. **next_steps**: What are the agreed-upon next steps or actions?
+4. **how_crono_helps**: How can Crono help solve the identified pain points? (OPTIONAL)
+   - Link each pain point to a specific Crono solution or feature
+   - Only include if information about Crono's capabilities was discussed
+   - Focus on concrete solutions, not generic marketing language
+   - If Crono was not discussed or no solutions presented, write "Not discussed" in the meeting language
+
+5. **next_steps**: What are the agreed-upon next steps or actions?
    - Include specific commitments: demos, trials, contract reviews, follow-up calls
    - Include dates if mentioned
    - Include who is responsible for each action
    - If not discussed, write "To be determined" in the meeting language
 
-5. **roadblocks**: What potential obstacles or concerns were raised?
+6. **roadblocks**: What potential obstacles or concerns were raised?
    - Budget constraints, approval processes, competing priorities, technical limitations
    - Objections or hesitations mentioned
    - If not discussed, write "None identified" in the meeting language
@@ -112,6 +118,7 @@ Return ONLY a valid JSON object with these exact keys:
     "tech_stack": "...",
     "pain_points": "...",
     "impact": "...",
+    "how_crono_helps": "...",
     "next_steps": "...",
     "roadblocks": "..."
 }}
@@ -151,7 +158,7 @@ Now extract the sales data in JSON format:"""
             data = json.loads(json_text)
 
             # Ensure all required keys exist
-            required_keys = ["tech_stack", "pain_points", "impact", "next_steps", "roadblocks"]
+            required_keys = ["tech_stack", "pain_points", "impact", "how_crono_helps", "next_steps", "roadblocks"]
             for key in required_keys:
                 if key not in data:
                     data[key] = "Not available"
@@ -223,6 +230,7 @@ Now extract the sales data in JSON format:"""
             "tech_stack": "Not discussed",
             "pain_points": "Not discussed",
             "impact": "Not discussed",
+            "how_crono_helps": "Not discussed",
             "next_steps": "To be determined",
             "roadblocks": "None identified"
         }
