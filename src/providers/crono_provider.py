@@ -538,7 +538,7 @@ class CronoProvider(CRMProvider):
 
         try:
             api_url = "https://ext.crono.one/api/v1"
-            response = requests.put(
+            response = requests.patch(
                 f"{api_url}/Opportunities/{deal_id}",
                 headers=self.headers,
                 json=payload,
