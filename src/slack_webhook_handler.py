@@ -2132,12 +2132,15 @@ def handle_view_crono_deals(db, payload: Dict):
                 'recording_id': recording_id
             })
 
-            # Get available stages for dropdown (real Crono stages - lowercase, no spaces)
+            # Get available stages for dropdown (real Crono "default" pipeline stages)
             available_stages = [
-                {"text": {"type": "plain_text", "text": "Lead"}, "value": "lead"},
-                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "qualified"},
-                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "proposal"},
-                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "negotiation"},
+                {"text": {"type": "plain_text", "text": "Free Trial"}, "value": "appointmentscheduled"},
+                {"text": {"type": "plain_text", "text": "To Reschedule"}, "value": "3063541965"},
+                {"text": {"type": "plain_text", "text": "Demo"}, "value": "presentationscheduled"},
+                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "qualifiedtobuy"},
+                {"text": {"type": "plain_text", "text": "On Hold"}, "value": "543714773"},
+                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "432820979"},
+                {"text": {"type": "plain_text", "text": "Agreed to proceed"}, "value": "decisionmakerboughtin"},
                 {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "closedwon"},
                 {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "closedlost"}
             ]
@@ -2614,12 +2617,15 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
                 'recording_id': recording_id
             })
 
-            # Get available stages for dropdown (real Crono stages - lowercase, no spaces)
+            # Get available stages for dropdown (real Crono "default" pipeline stages)
             available_stages = [
-                {"text": {"type": "plain_text", "text": "Lead"}, "value": "lead"},
-                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "qualified"},
-                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "proposal"},
-                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "negotiation"},
+                {"text": {"type": "plain_text", "text": "Free Trial"}, "value": "appointmentscheduled"},
+                {"text": {"type": "plain_text", "text": "To Reschedule"}, "value": "3063541965"},
+                {"text": {"type": "plain_text", "text": "Demo"}, "value": "presentationscheduled"},
+                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "qualifiedtobuy"},
+                {"text": {"type": "plain_text", "text": "On Hold"}, "value": "543714773"},
+                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "432820979"},
+                {"text": {"type": "plain_text", "text": "Agreed to proceed"}, "value": "decisionmakerboughtin"},
                 {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "closedwon"},
                 {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "closedlost"}
             ]

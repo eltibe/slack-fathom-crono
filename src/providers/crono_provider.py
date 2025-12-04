@@ -561,16 +561,25 @@ class CronoProvider(CRMProvider):
         Returns:
             Dict mapping standard stages to Crono stages
         """
-        # Real Crono stages (all lowercase, no spaces)
+        # Real Crono stages from "default" pipeline (exact values from API)
         return {
-            'lead': 'lead',
-            'qualified': 'qualified',
-            'proposal': 'proposal',
-            'negotiation': 'negotiation',
+            'appointmentscheduled': 'appointmentscheduled',
+            'free trial': 'appointmentscheduled',
+            '3063541965': '3063541965',
+            'to reschedule': '3063541965',
+            'presentationscheduled': 'presentationscheduled',
+            'demo': 'presentationscheduled',
+            'qualifiedtobuy': 'qualifiedtobuy',
+            'qualified': 'qualifiedtobuy',
+            '543714773': '543714773',
+            'on hold': '543714773',
+            '432820979': '432820979',
+            'negotiation': '432820979',
+            'decisionmakerboughtin': 'decisionmakerboughtin',
+            'agreed to proceed': 'decisionmakerboughtin',
             'closedwon': 'closedwon',
-            'closedlost': 'closedlost',
-            # Also accept with spaces for backward compatibility
             'closed won': 'closedwon',
+            'closedlost': 'closedlost',
             'closed lost': 'closedlost'
         }
 
