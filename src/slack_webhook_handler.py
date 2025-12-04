@@ -2042,226 +2042,199 @@ def handle_view_crono_deals(db, payload: Dict):
                 "text": "⚠️ No external attendees found. Cannot determine Crono account for deals."
             })
 
-        # Process in background
-        import threading
+        # Get trigger_id IMMEDIATELY before it expires (3 second limit)
+        trigger_id = payload.get('trigger_id')
+        user_id = payload.get('user', {}).get('id')
 
-        def view_deals_in_background():
-            try:
-                logger.info(f"🔄 Fetching Crono deals in background...")
+        # Process synchronously (not in background) because trigger_id expires in 3 seconds
+        try:
+            logger.info(f"🔄 Fetching Crono deals synchronously...")
 
-                # TODO: Get tenant's CRM type and credentials from database
-                # For now, use Crono with env variables (backward compatible)
-                crm_type = os.getenv('CRM_PROVIDER', 'crono')
-                credentials = {
-                    'public_key': os.getenv('CRONO_PUBLIC_KEY'),
-                    'private_key': os.getenv('CRONO_API_KEY')
-                }
-                crm_provider = CRMProviderFactory.create(crm_type, credentials)
+            # TODO: Get tenant's CRM type and credentials from database
+            # For now, use Crono with env variables (backward compatible)
+            crm_type = os.getenv('CRM_PROVIDER', 'crono')
+            credentials = {
+                'public_key': os.getenv('CRONO_PUBLIC_KEY'),
+                'private_key': os.getenv('CRONO_API_KEY')
+            }
+            crm_provider = CRMProviderFactory.create(crm_type, credentials)
 
-                # Find account by domain
-                email_domain = external_emails[0].split('@')[-1]
-                company_name_raw = email_domain.split('.')[0] # Pass raw name, let find_account_by_domain handle variations
+            # Find account by domain
+            email_domain = external_emails[0].split('@')[-1]
+            company_name_raw = email_domain.split('.')[0] # Pass raw name, let find_account_by_domain handle variations
 
-                account = crm_provider.find_account_by_domain(
-                    email_domain=email_domain,
-                    company_name=company_name_raw
-                )
+            account = crm_provider.find_account_by_domain(
+                email_domain=email_domain,
+                company_name=company_name_raw
+            )
 
-                if not account:
-                    logger.warning(f"⚠️  No Crono account found for domain {email_domain}")
-
-                    if response_url:
-                        requests.post(response_url, json={
-                            "response_type": "ephemeral",
-                            "replace_original": False,
-                            "text": f"⚠️ No Crono account found for domain '{email_domain}'.\n\nCannot retrieve deals without a linked Crono account."
-                        }, timeout=5)
-                    return
-
-                account_id = account.get('objectId') or account.get('id')
-                account_name = account.get('name', 'Unknown')
-
-                logger.info(f"✅ Found Crono account: {account_name} ({account_id})")
-
-                # Build Crono URL
-                crono_url = f"https://app.crono.one/accounts/{account_id}"
-
-                # Get deals for the account
-                all_deals = crm_provider.get_deals(account_id, limit=100)
-                logger.info(f"📊 Found {len(all_deals)} total deals for account {account_id}")
-
-                # Filter out closed deals
-                open_deals = [
-                    deal for deal in all_deals
-                    if deal.get('stage', '').lower() not in ['closed won', 'closed lost']
-                ]
-                logger.info(f"📊 After filtering, {len(open_deals)} open deals remain")
-
-                if not open_deals:
-                    logger.warning(f"⚠️ No open deals found for account {account_id}")
-                    if response_url:
-                        requests.post(response_url, json={
-                            "response_type": "ephemeral",
-                            "replace_original": False,
-                            "text": f"⚠️ No open deals found for account '{account_name}'.\n\nAll deals are either Closed Won or Closed Lost."
-                        }, timeout=5)
-                    return
-
-                # Sort by date (most recent first) - use lastModifiedDate or createdDate
-                open_deals.sort(
-                    key=lambda d: d.get('lastModifiedDate', d.get('createdDate', '')),
-                    reverse=True
-                )
-
-                # Get the most recent deal
-                latest_deal = open_deals[0]
-                deal_id = latest_deal.get('objectId') or latest_deal.get('id')
-                deal_name = latest_deal.get('name', 'Unknown Deal')
-                deal_stage = latest_deal.get('stage', 'Unknown')
-                deal_amount = latest_deal.get('amount', 0)
-                deal_currency = latest_deal.get('currency', 'USD')
-                deal_close_date = latest_deal.get('closeDate', 'N/A')
-
-                logger.info(f"✅ Found most recent open deal: {deal_name} (ID: {deal_id})")
-
-                # Store deal data in conversation state for submission handler
-                user_id = payload.get('user', {}).get('id')
-                state_key = f"deal_edit_{user_id}_{deal_id}"
-                store_conversation_state(db, state_key, {
-                    'deal_id': deal_id,
-                    'account_id': account_id,
-                    'account_name': account_name,
-                    'recording_id': recording_id
+            if not account:
+                logger.warning(f"⚠️  No Crono account found for domain {email_domain}")
+                return jsonify({
+                    "response_type": "ephemeral",
+                    "replace_original": False,
+                    "text": f"⚠️ No Crono account found for domain '{email_domain}'.\n\nCannot retrieve deals without a linked Crono account."
                 })
 
-                # Get available stages for dropdown
-                available_stages = [
-                    {"text": {"type": "plain_text", "text": "Lead"}, "value": "Lead"},
-                    {"text": {"type": "plain_text", "text": "Qualified"}, "value": "Qualified"},
-                    {"text": {"type": "plain_text", "text": "Proposal"}, "value": "Proposal"},
-                    {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "Negotiation"},
-                    {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "Closed Won"},
-                    {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "Closed Lost"}
-                ]
+            account_id = account.get('objectId') or account.get('id')
+            account_name = account.get('name', 'Unknown')
 
-                # Find current stage option for initial selection
-                initial_stage = next(
-                    (opt for opt in available_stages if opt["value"] == deal_stage),
-                    available_stages[0]
-                )
+            logger.info(f"✅ Found Crono account: {account_name} ({account_id})")
 
-                # Get trigger_id for opening modal
-                trigger_id = payload.get('trigger_id')
-                if not trigger_id:
-                    logger.error("❌ No trigger_id found in payload")
-                    if response_url:
-                        requests.post(response_url, json={
-                            "response_type": "ephemeral",
-                            "replace_original": False,
-                            "text": "❌ Error: Could not open modal (no trigger_id)"
-                        }, timeout=5)
-                    return
+            # Build Crono URL
+            crono_url = f"https://app.crono.one/accounts/{account_id}"
 
-                # Open modal with deal details using views.push
-                # Note: Must use views.push() because trigger comes from button in modal
-                try:
-                    from modules.slack_client import SlackClient
-                    slack_client_inst = SlackClient()
-                    slack_web_client = slack_client_inst._client
+            # Get deals for the account
+            all_deals = crm_provider.get_deals(account_id, limit=100)
+            logger.info(f"📊 Found {len(all_deals)} total deals for account {account_id}")
 
-                    logger.info(f"🔄 Pushing deal edit modal for deal {deal_id}...")
-                    slack_web_client.views_push(
-                        trigger_id=trigger_id,
-                        view={
-                            "type": "modal",
-                            "callback_id": "edit_crono_deal_modal",
-                            "private_metadata": state_key,  # Store state key for submission
-                            "title": {"type": "plain_text", "text": "Edit Deal"},
-                            "submit": {"type": "plain_text", "text": "Save Changes"},
-                            "close": {"type": "plain_text", "text": "Cancel"},
-                            "blocks": [
+            # Filter out closed deals
+            open_deals = [
+                deal for deal in all_deals
+                if deal.get('stage', '').lower() not in ['closed won', 'closed lost']
+            ]
+            logger.info(f"📊 After filtering, {len(open_deals)} open deals remain")
+
+            if not open_deals:
+                logger.warning(f"⚠️ No open deals found for account {account_id}")
+                return jsonify({
+                    "response_type": "ephemeral",
+                    "replace_original": False,
+                    "text": f"⚠️ No open deals found for account '{account_name}'.\n\nAll deals are either Closed Won or Closed Lost."
+                })
+
+            # Sort by date (most recent first) - use lastModifiedDate or createdDate
+            open_deals.sort(
+                key=lambda d: d.get('lastModifiedDate', d.get('createdDate', '')),
+                reverse=True
+            )
+
+            # Get the most recent deal
+            latest_deal = open_deals[0]
+            deal_id = latest_deal.get('objectId') or latest_deal.get('id')
+            deal_name = latest_deal.get('name', 'Unknown Deal')
+            deal_stage = latest_deal.get('stage', 'Unknown')
+            deal_amount = latest_deal.get('amount', 0)
+            deal_currency = latest_deal.get('currency', 'USD')
+            deal_close_date = latest_deal.get('closeDate', 'N/A')
+
+            logger.info(f"✅ Found most recent open deal: {deal_name} (ID: {deal_id})")
+
+            # Store deal data in conversation state for submission handler
+            state_key = f"deal_edit_{user_id}_{deal_id}"
+            store_conversation_state(db, state_key, {
+                'deal_id': deal_id,
+                'account_id': account_id,
+                'account_name': account_name,
+                'recording_id': recording_id
+            })
+
+            # Get available stages for dropdown
+            available_stages = [
+                {"text": {"type": "plain_text", "text": "Lead"}, "value": "Lead"},
+                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "Qualified"},
+                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "Proposal"},
+                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "Negotiation"},
+                {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "Closed Won"},
+                {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "Closed Lost"}
+            ]
+
+            # Find current stage option for initial selection
+            initial_stage = next(
+                (opt for opt in available_stages if opt["value"] == deal_stage),
+                available_stages[0]
+            )
+
+            # Check trigger_id before opening modal
+            if not trigger_id:
+                logger.error("❌ No trigger_id found in payload")
+                return jsonify({
+                    "response_type": "ephemeral",
+                    "replace_original": False,
+                    "text": "❌ Error: Could not open modal (no trigger_id)"
+                })
+
+            # Open modal with deal details using views.push
+            # Note: Must use views.push() because trigger comes from button in modal
+            from modules.slack_client import SlackClient
+            slack_client_inst = SlackClient()
+            slack_web_client = slack_client_inst._client
+
+            logger.info(f"🔄 Pushing deal edit modal for deal {deal_id}...")
+            slack_web_client.views_push(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "edit_crono_deal_modal",
+                    "private_metadata": state_key,  # Store state key for submission
+                    "title": {"type": "plain_text", "text": "Edit Deal"},
+                    "submit": {"type": "plain_text", "text": "Save Changes"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": f"💰 {deal_name}"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Account:* {account_name}\n*Deal ID:* `{deal_id}`\n*Close Date:* {deal_close_date}"
+                            }
+                        },
+                        {"type": "divider"},
+                        {
+                            "type": "input",
+                            "block_id": "deal_amount_block",
+                            "label": {"type": "plain_text", "text": "Amount"},
+                            "element": {
+                                "type": "number_input",
+                                "action_id": "deal_amount_input",
+                                "is_decimal_allowed": True,
+                                "initial_value": str(deal_amount) if deal_amount else "0",
+                                "placeholder": {"type": "plain_text", "text": "Enter deal amount"}
+                            },
+                            "hint": {"type": "plain_text", "text": f"Currency: {deal_currency}"}
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "deal_stage_block",
+                            "label": {"type": "plain_text", "text": "Stage"},
+                            "element": {
+                                "type": "static_select",
+                                "action_id": "deal_stage_select",
+                                "initial_option": initial_stage,
+                                "options": available_stages
+                            }
+                        },
+                        {"type": "divider"},
+                        {
+                            "type": "context",
+                            "elements": [
                                 {
-                                    "type": "header",
-                                    "text": {"type": "plain_text", "text": f"💰 {deal_name}"}
-                                },
-                                {
-                                    "type": "section",
-                                    "text": {
-                                        "type": "mrkdwn",
-                                        "text": f"*Account:* {account_name}\n*Deal ID:* `{deal_id}`\n*Close Date:* {deal_close_date}"
-                                    }
-                                },
-                                {"type": "divider"},
-                                {
-                                    "type": "input",
-                                    "block_id": "deal_amount_block",
-                                    "label": {"type": "plain_text", "text": "Amount"},
-                                    "element": {
-                                        "type": "number_input",
-                                        "action_id": "deal_amount_input",
-                                        "is_decimal_allowed": True,
-                                        "initial_value": str(deal_amount) if deal_amount else "0",
-                                        "placeholder": {"type": "plain_text", "text": "Enter deal amount"}
-                                    },
-                                    "hint": {"type": "plain_text", "text": f"Currency: {deal_currency}"}
-                                },
-                                {
-                                    "type": "input",
-                                    "block_id": "deal_stage_block",
-                                    "label": {"type": "plain_text", "text": "Stage"},
-                                    "element": {
-                                        "type": "static_select",
-                                        "action_id": "deal_stage_select",
-                                        "initial_option": initial_stage,
-                                        "options": available_stages
-                                    }
-                                },
-                                {"type": "divider"},
-                                {
-                                    "type": "context",
-                                    "elements": [
-                                        {
-                                            "type": "mrkdwn",
-                                            "text": f"_Showing most recent open deal. Total open deals: {len(open_deals)}_"
-                                        }
-                                    ]
+                                    "type": "mrkdwn",
+                                    "text": f"_Showing most recent open deal. Total open deals: {len(open_deals)}_"
                                 }
                             ]
                         }
-                    )
-                    logger.info(f"✅ Deal edit modal pushed successfully")
-                except Exception as modal_error:
-                    logger.error(f"❌ Error pushing modal: {modal_error}")
-                    import traceback
-                    traceback.print_exc(file=sys.stderr)
-                    if response_url:
-                        requests.post(response_url, json={
-                            "response_type": "ephemeral",
-                            "replace_original": False,
-                            "text": f"❌ Error opening deal modal: {str(modal_error)}"
-                        }, timeout=5)
+                    ]
+                }
+            )
+            logger.info(f"✅ Deal edit modal pushed successfully")
 
-            except Exception as e:
-                logger.error(f"❌ Error fetching Crono deals: {e}")
-                import traceback
-                traceback.print_exc(file=sys.stderr)
+            # Return empty response (modal is already open)
+            return jsonify({})
 
-                if response_url:
-                    requests.post(response_url, json={
-                        "response_type": "ephemeral",
-                        "replace_original": False,
-                        "text": f"❌ Error fetching Crono deals: {str(e)}"
-                    }, timeout=5)
+        except Exception as e:
+            logger.error(f"❌ Error fetching Crono deals: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
 
-        thread = threading.Thread(target=view_deals_in_background)
-        thread.start()
-
-        # Return immediate acknowledgment
-        return jsonify({
-            "response_type": "ephemeral",
-            "replace_original": False,
-            "text": "⏳ Fetching Crono deals... This may take a few seconds."
-        })
+            return jsonify({
+                "response_type": "ephemeral",
+                "replace_original": False,
+                "text": f"❌ Error fetching Crono deals: {str(e)}"
+            })
 
     except Exception as e:
         logger.error(f"❌ Error in handle_view_crono_deals: {e}")
