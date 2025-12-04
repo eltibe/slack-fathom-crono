@@ -3490,48 +3490,6 @@ def handle_crono_task_submission(db, payload: dict):
                 task_type=selected_type,
                 prospect_id=prospect_id
             )
-
-            # Generate AI summary and create CRM note
-            try:
-                logger.info(f"📝 Generating AI summary for task: {subject}")
-
-                # Build context for AI
-                task_context = f"""Task Type: {selected_type}
-Subject: {subject}
-Due Date: {due_date.strftime('%Y-%m-%d %H:%M')}
-Description:
-{description}"""
-
-                # Use SalesSummaryGenerator to extract structured data
-                from modules.sales_summary_generator import SalesSummaryGenerator
-                summary_gen = SalesSummaryGenerator()
-
-                # Extract sales data from task description
-                summary_data = summary_gen.extract_sales_data(
-                    transcript=task_context,
-                    meeting_title=subject,
-                    meeting_language="it"  # Default to Italian, could be made configurable
-                )
-
-                # Create note in Crono with structured summary
-                note_id = crm_provider.create_meeting_summary(
-                    account_id=account_id,
-                    meeting_title=subject,
-                    summary_data=summary_data,
-                    meeting_url=None
-                )
-
-                if note_id:
-                    logger.info(f"✅ CRM note created successfully for task '{subject}'")
-                else:
-                    logger.warning(f"⚠️  CRM note creation returned None for task '{subject}'")
-
-            except Exception as note_error:
-                # Log but don't fail - task was already created successfully
-                logger.error(f"❌ Error creating CRM note: {note_error}")
-                import traceback
-                traceback.print_exc()
-
             private_meta = view.get('private_metadata') or '{}'
             channel_id = json.loads(private_meta).get("channel_id")
 
