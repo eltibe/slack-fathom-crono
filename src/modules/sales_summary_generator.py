@@ -38,6 +38,10 @@ class SalesSummaryGenerator:
         prompt = self._build_extraction_prompt(transcript, meeting_title, meeting_language)
 
         try:
+            import sys
+            sys.stderr.write(f"[SalesSummaryGenerator] Calling Claude API for meeting: {meeting_title}\n")
+            sys.stderr.write(f"[SalesSummaryGenerator] Transcript length: {len(transcript)} chars\n")
+
             message = self.client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=2000,
@@ -49,13 +53,28 @@ class SalesSummaryGenerator:
 
             if message.content:
                 response_text = message.content[0].text
-                return self._parse_sales_data(response_text)
+                sys.stderr.write(f"[SalesSummaryGenerator] Got response from Claude, length: {len(response_text)} chars\n")
+                sys.stderr.write(f"[SalesSummaryGenerator] Response preview: {response_text[:200]}...\n")
+                result = self._parse_sales_data(response_text)
+                sys.stderr.write(f"[SalesSummaryGenerator] Parsed data keys: {list(result.keys())}\n")
+                return result
             else:
+                sys.stderr.write("[SalesSummaryGenerator] WARNING: No content in Claude response\n")
                 return self._get_empty_response()
 
         except Exception as e:
-            print(f"Error extracting sales data: {e}")
-            return self._get_empty_response()
+            import traceback
+            sys.stderr.write(f"[SalesSummaryGenerator] ERROR with Claude API: {e}\n")
+            traceback.print_exc(file=sys.stderr)
+
+            # Fallback to Gemini
+            sys.stderr.write("[SalesSummaryGenerator] Falling back to Gemini API...\n")
+            try:
+                return self._extract_with_gemini(transcript, meeting_title, meeting_language)
+            except Exception as gemini_error:
+                sys.stderr.write(f"[SalesSummaryGenerator] ERROR with Gemini fallback: {gemini_error}\n")
+                traceback.print_exc(file=sys.stderr)
+                return self._get_empty_response()
 
     def _build_extraction_prompt(
         self,
@@ -234,6 +253,42 @@ Now extract the sales data in JSON format:"""
             "next_steps": "To be determined",
             "roadblocks": "None identified"
         }
+
+    def _extract_with_gemini(
+        self,
+        transcript: str,
+        meeting_title: str,
+        meeting_language: Optional[str] = None
+    ) -> Dict[str, str]:
+        """Fallback extraction using Gemini API."""
+        import google.generativeai as genai
+        import sys
+
+        sys.stderr.write("[SalesSummaryGenerator/Gemini] Initializing Gemini API...\n")
+
+        gemini_api_key = os.getenv('GEMINI_API_KEY')
+        if not gemini_api_key:
+            sys.stderr.write("[SalesSummaryGenerator/Gemini] ERROR: GEMINI_API_KEY not found\n")
+            return self._get_empty_response()
+
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
+        # Use same prompt as Claude
+        prompt = self._build_extraction_prompt(transcript, meeting_title, meeting_language)
+
+        sys.stderr.write(f"[SalesSummaryGenerator/Gemini] Calling Gemini for meeting: {meeting_title}\n")
+
+        response = model.generate_content(prompt)
+        response_text = response.text
+
+        sys.stderr.write(f"[SalesSummaryGenerator/Gemini] Got response, length: {len(response_text)} chars\n")
+        sys.stderr.write(f"[SalesSummaryGenerator/Gemini] Response preview: {response_text[:200]}...\n")
+
+        result = self._parse_sales_data(response_text)
+        sys.stderr.write(f"[SalesSummaryGenerator/Gemini] Parsed data keys: {list(result.keys())}\n")
+
+        return result
 
 
 if __name__ == "__main__":
