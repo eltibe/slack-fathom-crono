@@ -2122,7 +2122,7 @@ def handle_view_crono_deals(db, payload: Dict):
 
             # Store deal data in conversation state for submission handler
             state_key = f"deal_edit_{user_id}_{deal_id}"
-            store_conversation_state(db, state_key, {
+            set_conversation_state(db, state_key, {
                 'deal_id': deal_id,
                 'account_id': account_id,
                 'account_name': account_name,
@@ -2156,7 +2156,7 @@ def handle_view_crono_deals(db, payload: Dict):
 
             # Open modal with deal details using views.push
             # Note: Must use views.push() because trigger comes from button in modal
-            from modules.slack_client import SlackClient
+            from src.modules.slack_client import SlackClient
             slack_client_inst = SlackClient()
             slack_web_client = slack_client_inst._client
 
@@ -2441,7 +2441,7 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
         if not get_conversation_state(db, recording_id):
             logger.error(f"❌ No data found for recording {recording_id}")
             # For modal update, we need to show error in the modal itself
-            from modules.slack_client import SlackClient
+            from src.modules.slack_client import SlackClient
             slack_client_inst = SlackClient()
             slack_web_client = slack_client_inst._client
 
@@ -2468,7 +2468,7 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
         external_emails = state['external_emails']
 
         if not external_emails:
-            from modules.slack_client import SlackClient
+            from src.modules.slack_client import SlackClient
             slack_client_inst = SlackClient()
             slack_web_client = slack_client_inst._client
 
@@ -2597,7 +2597,7 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
 
             # Store deal data in conversation state for submission handler
             state_key = f"deal_edit_{user_id}_{deal_id}"
-            store_conversation_state(db, state_key, {
+            set_conversation_state(db, state_key, {
                 'deal_id': deal_id,
                 'account_id': account_id,
                 'account_name': account_name,
@@ -2621,7 +2621,7 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
             )
 
             # Update current modal with deal details using views.update
-            from modules.slack_client import SlackClient
+            from src.modules.slack_client import SlackClient
             slack_client_inst = SlackClient()
             slack_web_client = slack_client_inst._client
 
@@ -2696,7 +2696,7 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
             traceback.print_exc(file=sys.stderr)
 
             # Show error in modal
-            from modules.slack_client import SlackClient
+            from src.modules.slack_client import SlackClient
             slack_client_inst = SlackClient()
             slack_web_client = slack_client_inst._client
 
