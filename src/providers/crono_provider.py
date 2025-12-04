@@ -503,14 +503,15 @@ class CronoProvider(CRMProvider):
         except Exception as e:
             raise CRMIntegrationError(f"Failed to update deal {deal_id} to stage {stage}: {e}")
 
-    def update_deal(self, deal_id: str, amount: Optional[float] = None, stage: Optional[str] = None) -> Dict:
+    def update_deal(self, deal_id: str, amount: Optional[float] = None, stage: Optional[str] = None, description: Optional[str] = None) -> Dict:
         """
-        Update deal/opportunity in Crono (amount and/or stage).
+        Update deal/opportunity in Crono (amount, stage, and/or description).
 
         Args:
             deal_id: Crono opportunity objectId
             amount: New amount value (optional)
             stage: New stage name (optional)
+            description: New description text (optional)
 
         Returns:
             Updated deal data from Crono API
@@ -527,8 +528,11 @@ class CronoProvider(CRMProvider):
                 raise ValueError(f"Unknown deal stage: {stage}")
             payload_data["stage"] = crono_stage
 
+        if description is not None:
+            payload_data["description"] = description
+
         if not payload_data:
-            raise ValueError("Must provide at least one field to update (amount or stage)")
+            raise ValueError("Must provide at least one field to update (amount, stage, or description)")
 
         payload = {"data": payload_data}
 

@@ -2118,8 +2118,9 @@ def handle_view_crono_deals(db, payload: Dict):
             deal_name = latest_deal.get('name', 'Unknown Deal')
             deal_stage = latest_deal.get('stage', 'Unknown')
             deal_amount = latest_deal.get('amount', 0)
-            deal_currency = latest_deal.get('currency', 'USD')
+            deal_currency = 'EUR'  # Always use EUR
             deal_close_date = latest_deal.get('closeDate', 'N/A')
+            deal_description = latest_deal.get('description', '')
 
             logger.info(f"✅ Found most recent open deal: {deal_name} (ID: {deal_id})")
 
@@ -2188,15 +2189,14 @@ def handle_view_crono_deals(db, payload: Dict):
                         {
                             "type": "input",
                             "block_id": "deal_amount_block",
-                            "label": {"type": "plain_text", "text": "Amount"},
+                            "label": {"type": "plain_text", "text": "Amount (EUR)"},
                             "element": {
                                 "type": "number_input",
                                 "action_id": "deal_amount_input",
                                 "is_decimal_allowed": True,
                                 "initial_value": str(deal_amount) if deal_amount else "0",
-                                "placeholder": {"type": "plain_text", "text": "Enter deal amount"}
-                            },
-                            "hint": {"type": "plain_text", "text": f"Currency: {deal_currency}"}
+                                "placeholder": {"type": "plain_text", "text": "Enter deal amount in EUR"}
+                            }
                         },
                         {
                             "type": "input",
@@ -2208,6 +2208,19 @@ def handle_view_crono_deals(db, payload: Dict):
                                 "initial_option": initial_stage,
                                 "options": available_stages
                             }
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "deal_description_block",
+                            "label": {"type": "plain_text", "text": "Description"},
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "deal_description_input",
+                                "multiline": True,
+                                "initial_value": deal_description or "",
+                                "placeholder": {"type": "plain_text", "text": "Add a description for this deal..."}
+                            },
+                            "optional": True
                         },
                         {"type": "divider"},
                         {
@@ -2576,9 +2589,10 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
             deal_name = latest_deal.get('name', 'Unknown Deal')
             deal_stage = latest_deal.get('stage', 'Unknown')
             deal_amount = latest_deal.get('amount', 0)
-            deal_currency = latest_deal.get('currency', 'USD')
+            deal_currency = 'EUR'  # Always use EUR
             deal_close_date_raw = latest_deal.get('closeDate', '')
             deal_pipeline = latest_deal.get('pipeline', 'Unknown Pipeline')
+            deal_description = latest_deal.get('description', '')
 
             logger.info(f"✅ Found most recent open deal: {deal_name} (ID: {deal_id})")
             logger.info(f"📋 DEAL PAYLOAD - All available fields:")
@@ -2663,15 +2677,14 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
                         {
                             "type": "input",
                             "block_id": "deal_amount_block",
-                            "label": {"type": "plain_text", "text": "Amount"},
+                            "label": {"type": "plain_text", "text": "Amount (EUR)"},
                             "element": {
                                 "type": "number_input",
                                 "action_id": "deal_amount_input",
                                 "is_decimal_allowed": True,
                                 "initial_value": str(deal_amount) if deal_amount else "0",
-                                "placeholder": {"type": "plain_text", "text": "Enter deal amount"}
-                            },
-                            "hint": {"type": "plain_text", "text": f"Currency: {deal_currency}"}
+                                "placeholder": {"type": "plain_text", "text": "Enter deal amount in EUR"}
+                            }
                         },
                         {
                             "type": "input",
@@ -2683,6 +2696,19 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
                                 "initial_option": initial_stage,
                                 "options": available_stages
                             }
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "deal_description_block",
+                            "label": {"type": "plain_text", "text": "Description"},
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "deal_description_input",
+                                "multiline": True,
+                                "initial_value": deal_description or "",
+                                "placeholder": {"type": "plain_text", "text": "Add a description for this deal..."}
+                            },
+                            "optional": True
                         },
                         {"type": "divider"},
                         {
@@ -3527,7 +3553,10 @@ def handle_edit_crono_deal_submission(db, payload: Dict):
         stage_obj = view_state.get('deal_stage_block', {}).get('deal_stage_select', {}).get('selected_option')
         new_stage = stage_obj.get('value') if stage_obj else None
 
-        logger.info(f"💰 Updating deal {deal_id}: amount={new_amount}, stage={new_stage}")
+        # Get description
+        new_description = view_state.get('deal_description_block', {}).get('deal_description_input', {}).get('value')
+
+        logger.info(f"💰 Updating deal {deal_id}: amount={new_amount}, stage={new_stage}, description={new_description[:50] if new_description else None}...")
 
         # Get CRM credentials
         credentials = get_user_crm_credentials(db, user_id, team_id)
@@ -3544,7 +3573,8 @@ def handle_edit_crono_deal_submission(db, payload: Dict):
         updated_deal = crm_provider.update_deal(
             deal_id=deal_id,
             amount=new_amount,
-            stage=new_stage
+            stage=new_stage,
+            description=new_description
         )
 
         logger.info(f"✅ Deal updated successfully: {updated_deal}")
