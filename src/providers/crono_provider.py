@@ -561,15 +561,17 @@ class CronoProvider(CRMProvider):
         Returns:
             Dict mapping standard stages to Crono stages
         """
-        # ASSUMPTION: Crono uses these standard stage names
-        # This mapping should be verified and updated based on actual Crono CRM configuration
+        # Real Crono stages (all lowercase, no spaces)
         return {
-            'lead': 'Lead',
-            'qualified': 'Qualified',
-            'proposal': 'Proposal',
-            'negotiation': 'Negotiation',
-            'closed_won': 'Closed Won',
-            'closed_lost': 'Closed Lost'
+            'lead': 'lead',
+            'qualified': 'qualified',
+            'proposal': 'proposal',
+            'negotiation': 'negotiation',
+            'closedwon': 'closedwon',
+            'closedlost': 'closedlost',
+            # Also accept with spaces for backward compatibility
+            'closed won': 'closedwon',
+            'closed lost': 'closedlost'
         }
 
     # ==================== Helper Methods (Crono-specific) ====================

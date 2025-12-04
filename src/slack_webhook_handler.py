@@ -545,6 +545,9 @@ def slack_interactions():
                 return handle_followup_meeting_submission(db, payload)
             elif callback_id == 'edit_crono_deal_modal':
                 return handle_edit_crono_deal_submission(db, payload)
+            elif callback_id == 'followup_edit_modal':
+                # User clicked "Close" on the follow-up edit modal - just close it
+                return jsonify({'response_action': 'clear'})
 
         return jsonify({'status': 'ok'})
 
@@ -2129,19 +2132,19 @@ def handle_view_crono_deals(db, payload: Dict):
                 'recording_id': recording_id
             })
 
-            # Get available stages for dropdown
+            # Get available stages for dropdown (real Crono stages - lowercase, no spaces)
             available_stages = [
-                {"text": {"type": "plain_text", "text": "Lead"}, "value": "Lead"},
-                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "Qualified"},
-                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "Proposal"},
-                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "Negotiation"},
-                {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "Closed Won"},
-                {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "Closed Lost"}
+                {"text": {"type": "plain_text", "text": "Lead"}, "value": "lead"},
+                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "qualified"},
+                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "proposal"},
+                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "negotiation"},
+                {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "closedwon"},
+                {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "closedlost"}
             ]
 
-            # Find current stage option for initial selection
+            # Find current stage option for initial selection (case-insensitive match)
             initial_stage = next(
-                (opt for opt in available_stages if opt["value"] == deal_stage),
+                (opt for opt in available_stages if opt["value"].lower() == deal_stage.lower()),
                 available_stages[0]
             )
 
@@ -2611,19 +2614,19 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
                 'recording_id': recording_id
             })
 
-            # Get available stages for dropdown
+            # Get available stages for dropdown (real Crono stages - lowercase, no spaces)
             available_stages = [
-                {"text": {"type": "plain_text", "text": "Lead"}, "value": "Lead"},
-                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "Qualified"},
-                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "Proposal"},
-                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "Negotiation"},
-                {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "Closed Won"},
-                {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "Closed Lost"}
+                {"text": {"type": "plain_text", "text": "Lead"}, "value": "lead"},
+                {"text": {"type": "plain_text", "text": "Qualified"}, "value": "qualified"},
+                {"text": {"type": "plain_text", "text": "Proposal"}, "value": "proposal"},
+                {"text": {"type": "plain_text", "text": "Negotiation"}, "value": "negotiation"},
+                {"text": {"type": "plain_text", "text": "Closed Won"}, "value": "closedwon"},
+                {"text": {"type": "plain_text", "text": "Closed Lost"}, "value": "closedlost"}
             ]
 
-            # Find current stage option for initial selection
+            # Find current stage option for initial selection (case-insensitive match)
             initial_stage = next(
-                (opt for opt in available_stages if opt["value"] == deal_stage),
+                (opt for opt in available_stages if opt["value"].lower() == deal_stage.lower()),
                 available_stages[0]
             )
 
@@ -3530,7 +3533,7 @@ def handle_edit_crono_deal_submission(db, payload: Dict):
             })
 
         # Update deal in Crono
-        from providers.crono_provider import CronoProvider
+        from src.providers.crono_provider import CronoProvider
         crm_provider = CronoProvider(credentials=credentials)
         updated_deal = crm_provider.update_deal(
             deal_id=deal_id,
@@ -3544,11 +3547,9 @@ def handle_edit_crono_deal_submission(db, payload: Dict):
         delete_conversation_state(db, state_key)
 
         # Send success message to user
-        from src.modules.slack_client import SlackClient
-        slack_client_inst = SlackClient()
-        slack_client_inst.send_dm(
-            user_id=user_id,
-            message=f"✅ *Deal Updated Successfully*\n\n*Account:* {account_name}\n*Amount:* {new_amount}\n*Stage:* {new_stage}\n\n<https://app.crono.one/accounts/{account_id}|View in Crono>"
+        slack_web_client.chat_postMessage(
+            channel=user_id,
+            text=f"✅ *Deal Updated Successfully*\n\n*Account:* {account_name}\n*Amount:* {new_amount}\n*Stage:* {new_stage}\n\n<https://app.crono.one/accounts/{account_id}|View in Crono>"
         )
 
         return jsonify({'response_action': 'clear'})
