@@ -2571,9 +2571,36 @@ def handle_view_crono_deals_from_modal(db, payload: Dict):
             deal_stage = latest_deal.get('stage', 'Unknown')
             deal_amount = latest_deal.get('amount', 0)
             deal_currency = latest_deal.get('currency', 'USD')
-            deal_close_date = latest_deal.get('closeDate', 'N/A')
+            deal_close_date_raw = latest_deal.get('closeDate', '')
+            deal_pipeline = latest_deal.get('pipeline', 'Unknown Pipeline')
 
             logger.info(f"✅ Found most recent open deal: {deal_name} (ID: {deal_id})")
+            logger.info(f"📋 DEAL PAYLOAD - All available fields:")
+            logger.info(f"   Keys: {list(latest_deal.keys())}")
+            logger.info(f"   Pipeline: {deal_pipeline}")
+            logger.info(f"   Stage: {deal_stage}")
+            logger.info(f"   Full data: {latest_deal}")
+
+            # Format close date nicely (e.g., "15 Dicembre 2024")
+            deal_close_date = deal_close_date_raw
+            if deal_close_date_raw:
+                try:
+                    from datetime import datetime
+                    # Parse the date (assuming ISO format like "2024-12-15T00:00:00Z" or "2024-12-15")
+                    if 'T' in deal_close_date_raw:
+                        date_obj = datetime.fromisoformat(deal_close_date_raw.replace('Z', '+00:00'))
+                    else:
+                        date_obj = datetime.strptime(deal_close_date_raw, '%Y-%m-%d')
+
+                    # Italian month names
+                    mesi_ita = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno',
+                                'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre']
+                    deal_close_date = f"{date_obj.day} {mesi_ita[date_obj.month - 1]} {date_obj.year}"
+                except Exception as e:
+                    logger.warning(f"Could not parse close date '{deal_close_date_raw}': {e}")
+                    deal_close_date = deal_close_date_raw
+            else:
+                deal_close_date = 'N/A'
 
             # Store deal data in conversation state for submission handler
             state_key = f"deal_edit_{user_id}_{deal_id}"
