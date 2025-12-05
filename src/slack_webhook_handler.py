@@ -4097,6 +4097,17 @@ def google_oauth_callback():
                                message=f"Failed to complete authentication: {str(e)}"), 500
 
 
+@app.route('/logout', methods=['GET'])
+def logout():
+    """
+    Clear the session and log out the user.
+    Redirects back to the settings page.
+    """
+    session.clear()
+    logger.info("User logged out, session cleared")
+    return redirect(url_for('settings_page'))
+
+
 @app.route('/api/google/status', methods=['GET'])
 def google_oauth_status():
     """
