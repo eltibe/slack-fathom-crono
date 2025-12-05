@@ -17,7 +17,7 @@ import logging
 import base64
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta, timezone
-from flask import Flask, request, jsonify, render_template, redirect, url_for
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from slack_sdk.signature import SignatureVerifier
@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', os.urandom(24))
 
 # Global error handler
 @app.errorhandler(Exception)
@@ -3523,8 +3524,107 @@ def handle_crono_task_submission(db, payload: dict):
 
 @app.route('/settings', methods=['GET'])
 def settings_page():
-    """Serve the settings HTML page."""
-    return render_template('settings.html')
+    """
+    Serve the settings HTML page.
+    Requires Google OAuth login first.
+    """
+    # Check if user is logged in via Google OAuth
+    if 'google_email' not in session:
+        # User not logged in - show login page
+        return render_template('settings.html', logged_in=False)
+
+    # User is logged in - pass their info to the template
+    return render_template('settings.html',
+                         logged_in=True,
+                         google_email=session.get('google_email'),
+                         slack_user_id=session.get('slack_user_id'))
+
+
+@app.route('/api/session/slack-user-id', methods=['POST'])
+def save_slack_user_id():
+    """
+    Save Slack User ID to session and link to Google account in database.
+    Requires active Google OAuth session.
+    """
+    # Check if user is logged in
+    if 'google_email' not in session:
+        return jsonify({"error": "Not logged in"}), 401
+
+    data = request.get_json()
+    slack_user_id = data.get('slack_user_id')
+
+    if not slack_user_id:
+        return jsonify({"error": "slack_user_id required"}), 400
+
+    # Save to session
+    session['slack_user_id'] = slack_user_id
+
+    # Save to database - link Google account to Slack user
+    try:
+        with get_db() as db:
+            # Default team_id
+            team_id = 'T02R43CJEMA'
+
+            # Find tenant
+            tenant = db.query(Tenant).filter(Tenant.slack_team_id == team_id).first()
+            if not tenant:
+                logger.warning(f"Tenant not found: {team_id}")
+                return jsonify({"error": "Tenant not found"}), 404
+
+            # Find or create user
+            user = db.query(User).filter(
+                User.slack_user_id == slack_user_id,
+                User.tenant_id == tenant.id
+            ).first()
+
+            if not user:
+                user = User(
+                    tenant_id=tenant.id,
+                    slack_user_id=slack_user_id,
+                    is_active=True
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+
+            # Find or create settings
+            if not user.settings:
+                settings = UserSettings(
+                    tenant_id=tenant.id,
+                    user_id=user.id
+                )
+                db.add(settings)
+                db.commit()
+                db.refresh(settings)
+            else:
+                settings = user.settings
+
+            # Link Google account
+            settings.google_email = session.get('google_email')
+            settings.google_access_token = session.get('google_access_token')
+            settings.google_refresh_token = session.get('google_refresh_token')
+
+            # Parse token expiry from ISO format string
+            token_expiry_str = session.get('google_token_expiry')
+            if token_expiry_str:
+                from dateutil import parser
+                settings.google_token_expiry = parser.isoparse(token_expiry_str)
+
+            settings.google_gmail_enabled = True
+            settings.google_calendar_enabled = True
+            db.commit()
+
+            logger.info(f"✅ Linked Google account {session.get('google_email')} to Slack user {slack_user_id}")
+
+            return jsonify({
+                "success": True,
+                "slack_user_id": slack_user_id,
+                "google_email": session.get('google_email')
+            })
+
+    except Exception as e:
+        logger.error(f"Error saving Slack User ID: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to save: {str(e)}"}), 500
 
 
 def handle_edit_crono_deal_submission(db, payload: Dict):
@@ -3777,10 +3877,46 @@ def save_user_settings_api():
 # GOOGLE OAUTH ROUTES
 # ============================================================================
 
+@app.route('/oauth/google/login', methods=['GET'])
+def google_sso_login():
+    """
+    Initiate Google OAuth flow for SSO login to settings page.
+    No slack_user_id required upfront - user will enter it after login.
+    """
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        logger.error("Google OAuth credentials not configured")
+        return jsonify({"error": "Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"}), 500
+
+    try:
+        # Use GoogleOAuthService
+        oauth_service = GoogleOAuthService()
+        redirect_uri = url_for('google_oauth_callback', _external=True)
+
+        # State parameter indicates this is SSO login flow
+        state_data = {
+            "flow_type": "sso_login"
+        }
+        state_json = json.dumps(state_data)
+        state_encoded = base64.urlsafe_b64encode(state_json.encode()).decode()
+
+        # Generate authorization URL
+        authorization_url = oauth_service.get_authorization_url(
+            redirect_uri=redirect_uri,
+            state=state_encoded
+        )
+
+        logger.info(f"Starting SSO login flow")
+        return redirect(authorization_url)
+
+    except Exception as e:
+        logger.error(f"Error starting SSO login: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to start login: {str(e)}"}), 500
+
+
 @app.route('/oauth/google/start', methods=['GET'])
 def google_oauth_start():
     """
-    Initiate Google OAuth flow.
+    Initiate Google OAuth flow for integration (from Slack).
 
     Expected query parameters:
         - slack_user_id: User's Slack ID
@@ -3805,7 +3941,8 @@ def google_oauth_start():
         # Encode user context in state parameter
         state_data = {
             "slack_user_id": slack_user_id,
-            "team_id": team_id
+            "team_id": team_id,
+            "flow_type": "integration"
         }
         state_json = json.dumps(state_data)
         state_encoded = base64.urlsafe_b64encode(state_json.encode()).decode()
@@ -3832,7 +3969,7 @@ def google_oauth_callback():
     Handle Google OAuth callback.
 
     Receives authorization code, exchanges it for tokens,
-    and saves them to the database.
+    and saves them to the database OR creates a session for SSO login.
     """
     # Check for errors from Google
     error = request.args.get('error')
@@ -3855,7 +3992,28 @@ def google_oauth_callback():
         state_data = json.loads(state_json)
         slack_user_id = state_data.get('slack_user_id')
         team_id = state_data.get('team_id', 'T02R43CJEMA')
+        flow_type = state_data.get('flow_type', 'integration')  # 'integration' or 'sso_login'
 
+        # Handle SSO login flow (no slack_user_id yet)
+        if flow_type == 'sso_login':
+            # Use GoogleOAuthService to exchange code for tokens
+            oauth_service = GoogleOAuthService()
+            redirect_uri = request.base_url
+
+            token_info = oauth_service.exchange_code_for_tokens(code=code, redirect_uri=redirect_uri)
+
+            # Create session
+            session['google_email'] = token_info['email']
+            session['google_access_token'] = token_info['access_token']
+            session['google_refresh_token'] = token_info['refresh_token']
+            session['google_token_expiry'] = token_info['token_expiry'].isoformat()
+
+            logger.info(f"✅ SSO login successful for {token_info['email']}")
+
+            # Redirect back to settings page
+            return redirect(url_for('settings_page'))
+
+        # Handle integration flow (existing behavior)
         if not slack_user_id:
             return jsonify({"error": "Invalid state parameter"}), 400
 

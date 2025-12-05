@@ -136,6 +136,22 @@
 </head>
 <body>
     <div class="app-shell">
+        {% if not logged_in %}
+        <!-- Login Screen -->
+        <div style="grid-column: 1/-1; display: flex; align-items: center; justify-content: center; min-height: 100vh; background: radial-gradient(circle at 50% 30%, #e3f2ff 0, transparent 50%), var(--bg);">
+            <div class="card" style="max-width: 460px; text-align: center; padding: 48px 40px;">
+                <h1 style="margin: 0 0 12px; font-size: 1.8rem;">Crono Slack Assistant</h1>
+                <p class="muted" style="margin: 0 0 32px;">Accedi con Google per gestire le tue impostazioni</p>
+
+                <a href="/oauth/google/login" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #4285f4, #34a853); color: white; text-decoration: none; border-radius: 10px; font-weight: 600; transition: transform 0.2s ease, box-shadow 0.2s ease; box-shadow: 0 4px 12px rgba(66, 133, 244, 0.3);">
+                    Sign in with Google
+                </a>
+
+                <p class="muted" style="margin: 24px 0 0; font-size: 0.85rem;">Dopo il login potrai inserire il tuo Slack User ID</p>
+            </div>
+        </div>
+        {% else %}
+        <!-- Settings Interface (Logged In) -->
         <aside class="sidebar">
             <div class="brand">Crono Slack Assistant</div>
             <div class="nav" id="nav">
@@ -151,11 +167,15 @@
                 <div>
                     <div class="badge">Workspace Settings</div>
                     <h1 style="margin:6px 0 4px;">Impostazioni Utente</h1>
-                    <p class="muted">Gestisci API key, integrazioni e prompt AI per email e note.</p>
+                    <p class="muted">Logged in as: {{ google_email }}</p>
                 </div>
-                <div class="form-group" style="min-width:240px;">
+                <div class="form-group" style="min-width:280px;">
                     <label for="slack-user-id">Slack User ID (es. U01234567)</label>
-                    <input type="text" id="slack-user-id" placeholder="Richiesto per caricare/salvare">
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="slack-user-id" placeholder="Inserisci il tuo Slack User ID" value="{{ slack_user_id or '' }}" style="flex: 1;">
+                        <button id="save-slack-user-id-btn" class="btn" style="background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 10px; cursor: pointer; font-weight: 600;">Salva</button>
+                    </div>
+                    <span id="slack-user-id-status" class="muted" style="font-size: 0.85rem;"></span>
                 </div>
             </div>
 
@@ -271,6 +291,49 @@
             // Note: gmail_token and calendar_token removed since they're now managed via OAuth
             const fields = ['crono_public_key', 'crono_private_key', 'fathom_api_key', 'piper_api_key', 'email_tone'];
             const promptFields = ['ai-email-prompt', 'ai-notes-prompt']; // local only for now
+
+            // Handle Slack User ID save button
+            const saveSlackUserIdBtn = document.getElementById('save-slack-user-id-btn');
+            const slackUserIdStatus = document.getElementById('slack-user-id-status');
+
+            if (saveSlackUserIdBtn) {
+                saveSlackUserIdBtn.addEventListener('click', async () => {
+                    const slackUserId = slackUserIdInput.value.trim();
+
+                    if (!slackUserId) {
+                        slackUserIdStatus.textContent = '❌ Inserisci un Slack User ID valido';
+                        slackUserIdStatus.style.color = 'var(--error)';
+                        return;
+                    }
+
+                    saveSlackUserIdBtn.disabled = true;
+                    saveSlackUserIdBtn.textContent = 'Salvataggio...';
+
+                    try {
+                        const response = await fetch('/api/session/slack-user-id', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ slack_user_id: slackUserId })
+                        });
+
+                        const data = await response.json();
+
+                        if (response.ok) {
+                            slackUserIdStatus.textContent = `✅ Salvato! Account Google collegato.`;
+                            slackUserIdStatus.style.color = 'var(--success)';
+                        } else {
+                            slackUserIdStatus.textContent = `❌ Errore: ${data.error}`;
+                            slackUserIdStatus.style.color = 'var(--error)';
+                        }
+                    } catch (err) {
+                        slackUserIdStatus.textContent = `❌ Errore: ${err.message}`;
+                        slackUserIdStatus.style.color = 'var(--error)';
+                    } finally {
+                        saveSlackUserIdBtn.disabled = false;
+                        saveSlackUserIdBtn.textContent = 'Salva';
+                    }
+                });
+            }
 
             navButtons.forEach(btn => {
                 btn.addEventListener('click', () => {
@@ -482,5 +545,7 @@
             loadPrompts();
         });
     </script>
+        {% endif %}
+    </div>
 </body>
 </html>
