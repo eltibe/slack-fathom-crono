@@ -5,7 +5,7 @@ Manages Google OAuth2 authentication flow for Gmail and Google Calendar
 
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlencode
 
@@ -105,8 +105,8 @@ class GoogleOAuthService:
             refresh_token = token_response.get('refresh_token')
             expires_in = token_response.get('expires_in', 3600)
 
-            # Calculate token expiry
-            token_expiry = datetime.now() + timedelta(seconds=expires_in)
+            # Calculate token expiry (timezone-aware)
+            token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
             # Create credentials object to get user email
             credentials = Credentials(token=access_token)
@@ -153,7 +153,8 @@ class GoogleOAuthService:
             # Refresh the token
             credentials.refresh(Request())
 
-            token_expiry = datetime.now() + timedelta(seconds=3600)  # Typically 1 hour
+            # Typically 1 hour (timezone-aware)
+            token_expiry = datetime.now(timezone.utc) + timedelta(seconds=3600)
 
             sys.stderr.write(f"[GoogleOAuthService] Successfully refreshed access token\n")
             sys.stderr.write(f"[GoogleOAuthService] New token expiry: {token_expiry}\n")
@@ -182,7 +183,7 @@ class GoogleOAuthService:
             Tuple of (valid_access_token, expiry_datetime)
         """
         # Check if token is expired or about to expire (5 min buffer)
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         buffer = timedelta(minutes=5)
 
         if token_expiry is None or token_expiry <= (now + buffer):
