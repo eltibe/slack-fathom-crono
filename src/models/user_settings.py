@@ -5,7 +5,7 @@ This model allows each user within a tenant to store their own
 credentials for various integrations and personal preferences.
 """
 
-from sqlalchemy import Column, String, Text, Boolean
+from sqlalchemy import Column, String, Text, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.schema import ForeignKey
 from sqlalchemy.orm import relationship
@@ -37,8 +37,16 @@ class UserSettings(Base, BaseModel):
     crono_private_key = Column(String(255), nullable=True, comment="Crono private API key")
     fathom_api_key = Column(String(255), nullable=True, comment="API Key for Fathom integration")
     piper_api_key = Column(String(255), nullable=True, comment="API Key for Piper.ai integration")
-    gmail_token = Column(Text, nullable=True, comment="OAuth token for Gmail integration")
-    calendar_token = Column(Text, nullable=True, comment="OAuth token for Calendar integration")
+    gmail_token = Column(Text, nullable=True, comment="DEPRECATED: OAuth token for Gmail integration")
+    calendar_token = Column(Text, nullable=True, comment="DEPRECATED: OAuth token for Calendar integration")
+
+    # Google OAuth (replaces gmail_token and calendar_token)
+    google_email = Column(String(255), nullable=True, comment="Google account email address")
+    google_access_token = Column(Text, nullable=True, comment="Google OAuth access token (expires hourly)")
+    google_refresh_token = Column(Text, nullable=True, comment="Google OAuth refresh token (long-lived)")
+    google_token_expiry = Column(DateTime(timezone=True), nullable=True, comment="Expiry time for Google access token")
+    google_calendar_enabled = Column(Boolean, default=True, nullable=False, comment="Whether Google Calendar integration is enabled")
+    google_gmail_enabled = Column(Boolean, default=True, nullable=False, comment="Whether Gmail integration is enabled")
 
     # User preferences
     email_tone = Column(String(50), default="professional", comment="Preferred tone for email drafts")
