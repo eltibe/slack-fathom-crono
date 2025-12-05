@@ -35,6 +35,7 @@ from src.modules.claude_email_generator import ClaudeEmailGenerator
 from src.modules.meeting_summary_generator import MeetingSummaryGenerator
 from src.modules.sales_summary_generator import SalesSummaryGenerator
 from src.modules.date_extractor import DateExtractor
+from src.modules.google_oauth import GoogleOAuthService
 from src.providers.factory import CRMProviderFactory
 from src.providers.crono_provider import CronoProvider
 from src.database import get_db
@@ -3858,26 +3859,11 @@ def google_oauth_callback():
         if not slack_user_id:
             return jsonify({"error": "Invalid state parameter"}), 400
 
-        # Create OAuth flow
-        flow = create_google_oauth_flow()
+        # Use GoogleOAuthService to exchange code for tokens
+        oauth_service = GoogleOAuthService()
+        redirect_uri = request.base_url  # Use current URL as redirect_uri
 
-        # Exchange authorization code for tokens
-        flow.fetch_token(code=code)
-
-        # Get credentials
-        credentials = flow.credentials
-
-        # Prepare token JSON to store in database
-        token_data = {
-            'token': credentials.token,
-            'refresh_token': credentials.refresh_token,
-            'token_uri': credentials.token_uri,
-            'client_id': credentials.client_id,
-            'client_secret': credentials.client_secret,
-            'scopes': credentials.scopes,
-            'expiry': credentials.expiry.isoformat() if credentials.expiry else None
-        }
-        token_json = json.dumps(token_data)
+        token_info = oauth_service.exchange_code_for_tokens(code=code, redirect_uri=redirect_uri)
 
         # Save to database
         with get_db() as db:
@@ -3915,12 +3901,16 @@ def google_oauth_callback():
             else:
                 settings = user.settings
 
-            # Save tokens (same token works for both Gmail and Calendar)
-            settings.gmail_token = token_json
-            settings.calendar_token = token_json
+            # Save tokens using new Google OAuth fields
+            settings.google_email = token_info['email']
+            settings.google_access_token = token_info['access_token']
+            settings.google_refresh_token = token_info['refresh_token']
+            settings.google_token_expiry = token_info['token_expiry']
+            settings.google_gmail_enabled = True
+            settings.google_calendar_enabled = True
             db.commit()
 
-            logger.info(f"✅ Saved Google OAuth tokens for user {slack_user_id}")
+            logger.info(f"✅ Saved Google OAuth tokens for user {slack_user_id} ({token_info['email']})")
 
         # Return success page
         return render_template('oauth_result.html',
@@ -3965,21 +3955,36 @@ def google_oauth_status():
                 User.tenant_id == tenant.id
             ).first()
 
-            if not user or not user.settings or not user.settings.gmail_token:
+            if not user or not user.settings:
                 return jsonify({"connected": False}), 200
 
-            # Check if token is valid
-            token_json = user.settings.gmail_token
-            token_data = json.loads(token_json)
+            settings = user.settings
 
-            # ASSUMPTION: If we have a token, consider it connected
-            # We'll handle refresh in the actual Gmail/Calendar modules
-            response = {
-                "connected": True,
-                "email": token_data.get('email', 'Connected')  # Email might not be in token
-            }
+            # Check if user has connected Google account (new fields)
+            if settings.google_email and settings.google_refresh_token:
+                response = {
+                    "connected": True,
+                    "email": settings.google_email,
+                    "gmail_enabled": settings.google_gmail_enabled,
+                    "calendar_enabled": settings.google_calendar_enabled
+                }
+                return jsonify(response), 200
 
-            return jsonify(response), 200
+            # Fallback: Check legacy gmail_token field for backwards compatibility
+            if settings.gmail_token:
+                try:
+                    token_data = json.loads(settings.gmail_token)
+                    response = {
+                        "connected": True,
+                        "email": token_data.get('email', 'Connected (legacy)'),
+                        "gmail_enabled": True,
+                        "calendar_enabled": True
+                    }
+                    return jsonify(response), 200
+                except:
+                    pass
+
+            return jsonify({"connected": False}), 200
 
     except Exception as e:
         logger.error(f"Error checking Google OAuth status: {e}")
@@ -4024,13 +4029,23 @@ def google_oauth_disconnect():
             if not user or not user.settings:
                 return jsonify({"message": "No settings to disconnect"}), 200
 
-            # Clear tokens
-            user.settings.gmail_token = None
-            user.settings.calendar_token = None
+            # Clear all Google OAuth tokens (both new and legacy fields)
+            settings = user.settings
+            settings.google_email = None
+            settings.google_access_token = None
+            settings.google_refresh_token = None
+            settings.google_token_expiry = None
+            settings.google_gmail_enabled = False
+            settings.google_calendar_enabled = False
+
+            # Also clear legacy fields for backwards compatibility
+            settings.gmail_token = None
+            settings.calendar_token = None
+
             db.commit()
 
             logger.info(f"✅ Disconnected Google account for user {slack_user_id}")
-            return jsonify({"message": "Google account disconnected successfully"}), 200
+            return jsonify({"success": True, "message": "Google account disconnected successfully"}), 200
 
     except Exception as e:
         logger.error(f"Error disconnecting Google account: {e}")
