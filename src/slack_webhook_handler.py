@@ -3939,8 +3939,9 @@ def google_oauth_start():
         return jsonify({"error": "Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"}), 500
 
     try:
-        # Create OAuth flow
-        flow = create_google_oauth_flow()
+        # Use GoogleOAuthService for consistency
+        oauth_service = GoogleOAuthService()
+        redirect_uri = url_for('google_oauth_callback', _external=True)
 
         # Encode user context in state parameter
         state_data = {
@@ -3951,12 +3952,10 @@ def google_oauth_start():
         state_json = json.dumps(state_data)
         state_encoded = base64.urlsafe_b64encode(state_json.encode()).decode()
 
-        # Generate authorization URL
-        authorization_url, state = flow.authorization_url(
-            access_type='offline',  # Get refresh token
-            prompt='consent',  # Force consent to ensure refresh token
-            state=state_encoded,
-            include_granted_scopes='true'
+        # Generate authorization URL using GoogleOAuthService
+        authorization_url = oauth_service.get_authorization_url(
+            redirect_uri=redirect_uri,
+            state=state_encoded
         )
 
         logger.info(f"Starting OAuth flow for user {slack_user_id}")
