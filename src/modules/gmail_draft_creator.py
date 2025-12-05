@@ -5,6 +5,7 @@ Creates email drafts in Gmail using the Gmail API
 
 import json
 import base64
+import sys
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, List, Callable
@@ -44,6 +45,68 @@ class GmailDraftCreator:
         self.token_save_callback = token_save_callback
         self.service = None
         self._authenticate()
+
+    @staticmethod
+    def from_google_oauth(access_token: str, refresh_token: str, token_expiry: Optional[datetime],
+                         google_oauth_service, token_save_callback: Optional[Callable[[str, datetime], None]] = None):
+        """
+        Create GmailDraftCreator using modern Google OAuth tokens.
+
+        Args:
+            access_token: Google OAuth access token
+            refresh_token: Google OAuth refresh token
+            token_expiry: When the access token expires
+            google_oauth_service: GoogleOAuthService instance for token refresh
+            token_save_callback: Optional callback(new_access_token, new_expiry) to save refreshed tokens
+
+        Returns:
+            GmailDraftCreator instance
+
+        Example:
+            from src.modules.google_oauth import GoogleOAuthService
+
+            google_oauth = GoogleOAuthService()
+
+            def save_tokens(new_access_token, new_expiry):
+                user.settings.google_access_token = new_access_token
+                user.settings.google_token_expiry = new_expiry
+                db.commit()
+
+            gmail = GmailDraftCreator.from_google_oauth(
+                access_token=user.settings.google_access_token,
+                refresh_token=user.settings.google_refresh_token,
+                token_expiry=user.settings.google_token_expiry,
+                google_oauth_service=google_oauth,
+                token_save_callback=save_tokens
+            )
+        """
+        try:
+            # Get valid access token (will refresh if expired)
+            valid_access_token, valid_expiry = google_oauth_service.get_valid_credentials(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_expiry=token_expiry
+            )
+
+            # If token was refreshed, save it
+            if valid_access_token != access_token and token_save_callback:
+                sys.stderr.write(f"[GmailDraftCreator] Token refreshed, saving to database\n")
+                token_save_callback(valid_access_token, valid_expiry)
+
+            # Build Gmail service directly with access token
+            gmail_service = google_oauth_service.build_gmail_service(valid_access_token)
+
+            # Create instance and set service directly
+            instance = object.__new__(GmailDraftCreator)
+            instance.service = gmail_service
+            instance.token_json = None
+            instance.token_save_callback = None
+
+            return instance
+
+        except Exception as e:
+            sys.stderr.write(f"[GmailDraftCreator] ERROR creating from Google OAuth: {e}\n")
+            raise
 
     def _authenticate(self):
         """

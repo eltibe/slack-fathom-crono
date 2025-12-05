@@ -1079,14 +1079,20 @@ def handle_create_gmail_draft(db, payload: Dict):
                     logger.info(f"🔄 Creating Gmail draft in background for modal...")
 
                     # Define callback to save refreshed tokens
-                    def save_gmail_token(new_token_json):
-                        user.settings.gmail_token = new_token_json
+                    def save_google_tokens(new_access_token, new_expiry):
+                        user.settings.google_access_token = new_access_token
+                        user.settings.google_token_expiry = new_expiry
                         db.commit()
-                        logger.info(f"Refreshed Gmail token for user {slack_user_id}")
+                        logger.info(f"Refreshed Google OAuth tokens for user {slack_user_id}")
 
-                    gmail = GmailDraftCreator(
-                        token_json=user.settings.gmail_token,
-                        token_save_callback=save_gmail_token
+                    # Use modern Google OAuth with GoogleOAuthService
+                    google_oauth = GoogleOAuthService()
+                    gmail = GmailDraftCreator.from_google_oauth(
+                        access_token=user.settings.google_access_token,
+                        refresh_token=user.settings.google_refresh_token,
+                        token_expiry=user.settings.google_token_expiry,
+                        google_oauth_service=google_oauth,
+                        token_save_callback=save_google_tokens
                     )
                     draft_id = gmail.create_draft_from_generated_email(
                         email_text=email_text,
@@ -1143,14 +1149,20 @@ def handle_create_gmail_draft(db, payload: Dict):
                 logger.info(f"🔄 Creating Gmail draft in background...")
 
                 # Define callback to save refreshed tokens
-                def save_gmail_token(new_token_json):
-                    user.settings.gmail_token = new_token_json
+                def save_google_tokens(new_access_token, new_expiry):
+                    user.settings.google_access_token = new_access_token
+                    user.settings.google_token_expiry = new_expiry
                     db.commit()
-                    logger.info(f"Refreshed Gmail token for user {slack_user_id}")
+                    logger.info(f"Refreshed Google OAuth tokens for user {slack_user_id}")
 
-                gmail = GmailDraftCreator(
-                    token_json=user.settings.gmail_token,
-                    token_save_callback=save_gmail_token
+                # Use modern Google OAuth with GoogleOAuthService
+                google_oauth = GoogleOAuthService()
+                gmail = GmailDraftCreator.from_google_oauth(
+                    access_token=user.settings.google_access_token,
+                    refresh_token=user.settings.google_refresh_token,
+                    token_expiry=user.settings.google_token_expiry,
+                    google_oauth_service=google_oauth,
+                    token_save_callback=save_google_tokens
                 )
                 draft_id = gmail.create_draft_from_generated_email(
                     email_text=email_text,
