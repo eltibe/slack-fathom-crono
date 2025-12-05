@@ -84,36 +84,41 @@ class GoogleOAuthService:
                 - email: str
         """
         try:
-            flow = Flow.from_client_config(
-                {
-                    "web": {
-                        "client_id": self.client_id,
-                        "client_secret": self.client_secret,
-                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                        "token_uri": "https://oauth2.googleapis.com/token",
-                    }
-                },
-                scopes=self.SCOPES,
-                redirect_uri=redirect_uri
-            )
+            import requests
 
-            flow.fetch_token(code=code)
+            # Exchange code for tokens using Google's token endpoint directly
+            # This bypasses Flow's scope validation which causes "Scope has changed" errors
+            token_url = "https://oauth2.googleapis.com/token"
+            token_data = {
+                'code': code,
+                'client_id': self.client_id,
+                'client_secret': self.client_secret,
+                'redirect_uri': redirect_uri,
+                'grant_type': 'authorization_code'
+            }
 
-            credentials = flow.credentials
+            response = requests.post(token_url, data=token_data)
+            response.raise_for_status()
+            token_response = response.json()
 
-            # Get user email from OAuth
+            access_token = token_response['access_token']
+            refresh_token = token_response.get('refresh_token')
+            expires_in = token_response.get('expires_in', 3600)
+
+            # Calculate token expiry
+            token_expiry = datetime.now() + timedelta(seconds=expires_in)
+
+            # Create credentials object to get user email
+            credentials = Credentials(token=access_token)
             email = self._get_user_email(credentials)
-
-            # Calculate token expiry (typically 1 hour from now)
-            token_expiry = datetime.now() + timedelta(seconds=credentials.expiry.timestamp() - datetime.now().timestamp())
 
             sys.stderr.write(f"[GoogleOAuthService] Successfully exchanged code for tokens\n")
             sys.stderr.write(f"[GoogleOAuthService] User email: {email}\n")
             sys.stderr.write(f"[GoogleOAuthService] Token expiry: {token_expiry}\n")
 
             return {
-                'access_token': credentials.token,
-                'refresh_token': credentials.refresh_token,
+                'access_token': access_token,
+                'refresh_token': refresh_token,
                 'token_expiry': token_expiry,
                 'email': email
             }
