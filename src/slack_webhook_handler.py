@@ -1050,7 +1050,8 @@ def handle_create_gmail_draft(db, payload: Dict):
             User.tenant_id == tenant.id
         ).first()
 
-        if not user or not user.settings or not user.settings.gmail_token:
+        # Check for Google OAuth tokens (new fields)
+        if not user or not user.settings or not user.settings.google_access_token or not user.settings.google_refresh_token:
             error_msg = "❌ Please connect your Google account first at https://slack-fathom-crono.onrender.com/settings"
 
             if is_modal_action:
@@ -3796,10 +3797,22 @@ def get_user_settings_api():
                 response['fathom_api_key'] = '**masked**'
             if settings.piper_api_key:
                 response['piper_api_key'] = '**masked**'
+            # Legacy fields (deprecated)
             if settings.gmail_token:
                 response['gmail_token'] = '**masked**'
             if settings.calendar_token:
                 response['calendar_token'] = '**masked**'
+
+            # New Google OAuth fields
+            if settings.google_access_token:
+                response['google_access_token'] = '**masked**'
+            if settings.google_refresh_token:
+                response['google_refresh_token'] = '**masked**'
+            if settings.google_email:
+                response['google_email'] = settings.google_email
+            if settings.google_token_expiry:
+                response['google_token_expiry'] = settings.google_token_expiry.isoformat()
+
             if settings.email_tone:
                 response['email_tone'] = settings.email_tone
 
