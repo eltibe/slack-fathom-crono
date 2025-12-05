@@ -62,7 +62,6 @@ class GoogleOAuthService:
         # Add additional parameters for better UX
         authorization_url, _ = flow.authorization_url(
             access_type='offline',  # Get refresh token
-            include_granted_scopes='true',
             prompt='consent',  # Force consent to ensure we get refresh_token
             state=state
         )
